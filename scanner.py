@@ -1,3 +1,4 @@
+import os
 import requests
 import pandas as pd
 import time
@@ -28,6 +29,32 @@ BINANCE_FUTURES_FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
 
 # Maximum allowed bid-ask spread % (0.035% = Tight Orderbook, Low Slippage Risk)
 MAX_ALLOWED_SPREAD_PCT = 0.035
+
+def send_pushbullet_notification(title, body):
+    """Sends native Android lock-screen push notifications via Pushbullet API."""
+    api_token = os.getenv("PUSHBULLET_TOKEN")
+    if not api_token:
+        print("⚠️ PUSHBULLET_TOKEN is not set in environment variables.")
+        return
+
+    url = "https://api.pushbullet.com/v2/pushes"
+    headers = {
+        "Access-Token": api_token,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "type": "note",
+        "title": title,
+        "body": body
+    }
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        if res.status_code == 200:
+            print("🚀 Pushbullet notification sent successfully!")
+        else:
+            print(f"❌ Failed to send Pushbullet notification: Status {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"❌ Pushbullet API Request Error: {e}")
 
 def calculate_rsi(series, period=14):
     """Calculates RSI using pure pandas math."""
@@ -203,7 +230,7 @@ def analyze_legendary_setup(symbol, btc_regime):
             "reason": f"Extreme Volatility / Wick Risk (ATR: {atr_pct:.2f}%)"
         }
 
-    # --- NEW: SIDEWAYS & CONSOLIDATION FILTER (ADX < 20 Filter) ---
+    # --- SIDEWAYS & CONSOLIDATION FILTER (ADX < 20 Filter) ---
     adx_4h = calculate_adx(df_4h, 14)
     if adx_4h < 20.0 and symbol not in ["BTCUSDT", "ETHUSDT"]:
         return {
@@ -304,7 +331,7 @@ def analyze_legendary_setup(symbol, btc_regime):
         score -= 15
         confluences.append(f"⚡ Instant Dump Impulse: {roc_1m:.2f}% (Vol Surge: {vol_ratio:.1f}x)")
 
-    # 7. --- NEW: STRONG TREND ADX BOOST ---
+    # 7. STRONG TREND ADX BOOST
     if adx_4h >= 30.0:
         if score >= 50:
             score += 10
@@ -377,7 +404,7 @@ def run_legendary_engine():
     blocked_trades = [r for r in results if "BLOCKED" in r['signal']]
     neutral_trades = [r for r in results if r['bias'] not in ['LONG', 'SHORT'] and "BLOCKED" not in r['signal']]
 
-    # Helper function for dynamic price formatting (Fixes $0.00 issue)
+    # Helper function for dynamic price formatting
     def fmt_p(price):
         return f"{price:.6f}".rstrip('0').rstrip('.') if price < 1 else f"{price:.2f}"
 
@@ -391,6 +418,20 @@ def run_legendary_engine():
             print(f"   ├─ Funding Rate: {item['funding']:.4f}% | 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f} | OB Ratio: {item['ob_ratio']:.2f}x")
             print(f"   ├─ Key Support: ${fmt_p(item['support'])} | Key Resistance: ${fmt_p(item['resistance'])}")
             print(f"   └─ Confluences: {', '.join(item['confluences'])}\n")
+
+        # -------------------------------------------------------------
+        # PUSHBULLET ALERT TRIGGER (Triggered only when signals exist)
+        # -------------------------------------------------------------
+        alert_title = f"🚨 BINANCE TRADE ALERT ({len(high_conviction)} Signal Found)"
+        alert_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n\n"
+        for item in high_conviction:
+            alert_body += f"🪙 {item['symbol']} | Signal: {item['signal']}\n"
+            alert_body += f"💰 Price: ${fmt_p(item['price'])} | Score: {item['score']}/100\n"
+            alert_body += f"📊 4H RSI: {item['rsi_4h']:.1f} | ADX: {item['adx_4h']:.1f} | OB: {item['ob_ratio']:.2f}x\n"
+            alert_body += f"🎯 Supp: ${fmt_p(item['support'])} | Res: ${fmt_p(item['resistance'])}\n\n"
+        
+        send_pushbullet_notification(alert_title, alert_body)
+
     else:
         print("   (Koi high-probability safe trade spot nahi hui. Capital preserve karein!)\n")
 
