@@ -2,9 +2,8 @@ name: Binance Market Scanner Bot
 
 on:
   schedule:
-    # Repeat every 15 minutes automatically
+    # Runs every 15 minutes
     - cron: '*/15 * * * *'
-  # Allows manual triggering from the GitHub Actions UI
   workflow_dispatch:
 
 jobs:
@@ -18,14 +17,15 @@ jobs:
       - name: Set up Python Environment
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
+          cache: 'pip' # Speeds up execution by caching installed pip packages
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Execute Binance Market Scanner
+      - name: Execute Live Chart & Price Action Scanner
         env:
           PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
         run: python scanner.py

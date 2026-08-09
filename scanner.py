@@ -1,6 +1,7 @@
 import os
 import requests
 import pandas as pd
+import numpy as np
 import time
 
 # Top 75 High-Liquidity USDT Pairs (Futures / Major Spot)
@@ -98,6 +99,50 @@ def calculate_adx(df, period=14):
         return adx.iloc[-1]
     except Exception:
         return 0.0
+
+def analyze_dynamic_structure(df_4h):
+    """
+    Reads live chart candles to detect real Price Action Support & Resistance.
+    Calculates Pivot Points and Level Proximity.
+    """
+    if df_4h is None or len(df_4h) < 30:
+        return None
+
+    highs = df_4h['high'].values
+    lows = df_4h['low'].values
+    closes = df_4h['close'].values
+
+    pivot_highs = []
+    pivot_lows = []
+
+    for i in range(2, len(df_4h) - 2):
+        if highs[i] > highs[i-1] and highs[i] > highs[i-2] and highs[i] > highs[i+1] and highs[i] > highs[i+2]:
+            pivot_highs.append(highs[i])
+        if lows[i] < lows[i-1] and lows[i] < lows[i-2] and lows[i] < lows[i+1] and lows[i] < lows[i+2]:
+            pivot_lows.append(lows[i])
+
+    current_price = closes[-1]
+    
+    valid_res = [h for h in pivot_highs if h > current_price]
+    valid_sup = [l for l in pivot_lows if l < current_price]
+
+    dynamic_res = min(valid_res) if valid_res else df_4h['high'].tail(20).max()
+    dynamic_sup = max(valid_sup) if valid_sup else df_4h['low'].tail(20).min()
+
+    dist_to_res_pct = ((dynamic_res - current_price) / current_price) * 100
+    dist_to_sup_pct = ((current_price - dynamic_sup) / current_price) * 100
+
+    is_resistance_breakout = current_price >= dynamic_res
+    is_support_breakdown = current_price <= dynamic_sup
+
+    return {
+        "support": dynamic_sup,
+        "resistance": dynamic_res,
+        "dist_res_pct": dist_to_res_pct,
+        "dist_sup_pct": dist_to_sup_pct,
+        "is_breakout": is_resistance_breakout,
+        "is_breakdown": is_support_breakdown
+    }
 
 def calculate_price_velocity(df_1m):
     """Calculates 1-minute to 3-minute instant Price Rate of Change (ROC)."""
@@ -218,6 +263,11 @@ def analyze_legendary_setup(symbol, btc_regime):
     if df_1d is None or df_4h is None:
         return None
 
+    # Live Chart Dynamic Structure Readout
+    chart_struct = analyze_dynamic_structure(df_4h)
+    if not chart_struct:
+        return None
+
     # Calculate ATR Volatility Squeeze
     df_4h['ATR'] = calculate_atr(df_4h, 14)
     atr_pct = (df_4h['ATR'].iloc[-1] / df_4h['close'].iloc[-1]) * 100
@@ -273,11 +323,6 @@ def analyze_legendary_setup(symbol, btc_regime):
     
     # Orderbook Imbalance Calculation
     ob_ratio, bid_vol, ask_vol = fetch_orderbook_imbalance(symbol, depth=20)
-    
-    # Key Levels
-    recent_20_4h = df_4h.tail(20)
-    support_4h = recent_20_4h['low'].min()
-    resistance_4h = recent_20_4h['high'].max()
 
     # Derivatives Sentiment
     funding_rate = fetch_funding_rate(symbol)
@@ -339,18 +384,39 @@ def analyze_legendary_setup(symbol, btc_regime):
             score -= 10
         confluences.append(f"💪 Strong Trend Momentum (4H ADX: {adx_4h:.1f})")
 
+    # 8. DYNAMIC PRICE ACTION LEVEL VERIFICATION (SMART GUARD)
+    if score >= 60:
+        if chart_struct['is_breakout']:
+            score += 15
+            confluences.append("🔥 Dynamic Resistance Breakout Confirmed!")
+        elif chart_struct['dist_res_pct'] < 0.3:
+            score -= 25
+            confluences.append("⚠️ Long Blocked: Price Hitting Direct Resistance")
+        else:
+            confluences.append(f"Chart Room to Rise: {chart_struct['dist_res_pct']:.2f}% to Res")
+
+    elif score <= 40:
+        if chart_struct['is_breakdown']:
+            score -= 15
+            confluences.append("💥 Dynamic Support Breakdown Confirmed!")
+        elif chart_struct['dist_sup_pct'] < 0.3:
+            score += 25
+            confluences.append("⚠️ Short Blocked: Price Sitting Direct on Support")
+        else:
+            confluences.append(f"Chart Room to Fall: {chart_struct['dist_sup_pct']:.2f}% to Sup")
+
     # Final Classification Logic with BTC Guard Filter
     signal = "NEUTRAL 🟡"
     bias = "NO TRADE"
 
-    if score >= 70:
+    if score >= 65:
         if btc_regime == "BEARISH" and symbol != "BTCUSDT":
             signal = "⚠️ BLOCKED LONG (BTC Bearish Risk)"
             bias = "HIGH RISK"
         else:
             signal = "🔥 LEGENDARY LONG"
             bias = "LONG"
-    elif score <= 30:
+    elif score <= 35:
         if btc_regime == "BULLISH" and symbol != "BTCUSDT":
             signal = "⚠️ BLOCKED SHORT (BTC Bullish Risk)"
             bias = "HIGH RISK"
@@ -368,15 +434,15 @@ def analyze_legendary_setup(symbol, btc_regime):
         "funding": funding_rate,
         "rsi_4h": rsi_4h,
         "adx_4h": adx_4h,
-        "support": support_4h,
-        "resistance": resistance_4h,
+        "support": chart_struct['support'],
+        "resistance": chart_struct['resistance'],
         "ob_ratio": ob_ratio,
         "confluences": confluences
     }
 
 def run_legendary_engine():
     print("=" * 80)
-    print("   🏛️ LEGENDARY ENGINE v3.0 (75 PAIRS - ANTI-SIDEWAYS & ANTI-SLIPPAGE) 🏛️")
+    print("   🏛️ LEGENDARY ENGINE v3.0 (LIVE CHART STRUCTURE & PRICE ACTION VERIFIED) 🏛️")
     print("=" * 80)
 
     print("\n⏳ Fetching BTC Macro Market Guard...")
@@ -395,7 +461,7 @@ def run_legendary_engine():
                 results.append(res)
             else:
                 rejected.append(res)
-        time.sleep(0.05)  # Fast scanning speed
+        time.sleep(0.04)
 
     # Sort By Institutional Score Highest to Lowest
     results.sort(key=lambda x: x['score'], reverse=True)
@@ -410,7 +476,7 @@ def run_legendary_engine():
 
     # Output Printing
     print("\n" + "=" * 80)
-    print("🎯 HIGH-CONVICTION SAFE SLIPPAGE TRADES (Score >= 70 or <= 30)")
+    print("🎯 HIGH-CONVICTION SAFE SLIPPAGE TRADES (Score >= 65 or <= 35)")
     print("=" * 80)
     if high_conviction:
         for item in high_conviction:
@@ -447,7 +513,7 @@ def run_legendary_engine():
         print("=" * 80)
         print(f"🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)")
         print("=" * 80)
-        for r in rejected[:15]:  # Show top 15 rejected reasons to keep output clean
+        for r in rejected[:15]:
             print(f"❌ {r['symbol']:<10} | Reason: {r['reason']}")
         if len(rejected) > 15:
             print(f"   ... and {len(rejected) - 15} more coins rejected for safe trading.")
