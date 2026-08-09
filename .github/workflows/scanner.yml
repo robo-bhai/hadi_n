@@ -2,7 +2,9 @@ name: Binance Market Scanner Bot
 
 on:
   schedule:
+    # Repeat every 15 minutes automatically
     - cron: '*/15 * * * *'
+  # Allows manual triggering from the GitHub Actions UI
   workflow_dispatch:
 
 jobs:
@@ -24,4 +26,6 @@ jobs:
           pip install -r requirements.txt
 
       - name: Execute Binance Market Scanner
+        env:
+          PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
         run: python scanner.py
