@@ -16,13 +16,13 @@ PAIRS = [
     "ALGOUSDT", "FLOWUSDT", "KSMUSDT", "NEOUSDT", "EOSUSDT", "IOTAUSDT", "XTZUSDT", 
     "ZILUSDT", "CRVUSDT", "COMPUSDT", "DYDXUSDT", "ENSUSDT", "ORDIUSDT", "1INCHUSDT", 
     "PYTHUSDT", "JUPUSDT", "STRKUSDT", "ENAUSDT", "NOTUSDT", "PENDLEUSDT", "TONUSDT", 
-    "WLDUSDT", "ARKMUSDT", "TRXUSDT", "XLMUSDT", "ORDIUSDT"
+    "WLDUSDT", "ARKMUSDT", "TRXUSDT", "XLMUSDT"
 ]
 
 # Unique filter to avoid any duplicates
 PAIRS = list(dict.fromkeys(PAIRS))
 
-# Public Vision Endpoints (GitHub Actions / Cloud IP friendly - No US Geoblock)
+# Public Endpoints (GitHub Actions / Cloud IP friendly - No US Geoblock)
 BINANCE_SPOT_URL = "https://data-api.binance.vision/api/v3/klines"
 BINANCE_BOOK_TICKER_URL = "https://data-api.binance.vision/api/v3/ticker/bookTicker"
 BINANCE_DEPTH_URL = "https://data-api.binance.vision/api/v3/depth"
@@ -30,6 +30,11 @@ BINANCE_FUTURES_FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
 
 # Maximum allowed bid-ask spread % (0.035% = Tight Orderbook, Low Slippage Risk)
 MAX_ALLOWED_SPREAD_PCT = 0.035
+
+# USER ACCOUNT RISK CONSTRAINTS
+USER_CAPITAL_USDT = 100.0
+MARGIN_ALLOC_PCT = 0.13      # ~13% margin allocation per trade ($13 USDT)
+MAX_ACCOUNT_RISK_PCT = 0.01  # 1% risk per trade ($1.00 USDT max loss)
 
 def send_pushbullet_notification(title, body):
     """Sends native Android lock-screen push notifications via Pushbullet API."""
@@ -255,7 +260,7 @@ def analyze_legendary_setup(symbol, btc_regime):
             "reason": f"High Bid/Ask Spread ({current_spread:.4f}%)"
         }
 
-    # Fetch Multi-Timeframe Data (1D, 4H & High-Frequency 1M)
+    # Fetch Multi-Timeframe Data
     df_1d = fetch_klines(symbol, interval="1d", limit=60)
     df_4h = fetch_klines(symbol, interval="4h", limit=60)
     df_1m = fetch_klines(symbol, interval="1m", limit=30)
@@ -270,9 +275,10 @@ def analyze_legendary_setup(symbol, btc_regime):
 
     # Calculate ATR Volatility Squeeze
     df_4h['ATR'] = calculate_atr(df_4h, 14)
-    atr_pct = (df_4h['ATR'].iloc[-1] / df_4h['close'].iloc[-1]) * 100
+    atr_val = df_4h['ATR'].iloc[-1]
+    atr_pct = (atr_val / df_4h['close'].iloc[-1]) * 100
     
-    # Dynamic Volatility Cutoff: Reject tokens moving too erratically
+    # Dynamic Volatility Cutoff
     if atr_pct > 5.0 and symbol not in ["BTCUSDT", "ETHUSDT"]:
         return {
             "symbol": symbol,
@@ -280,7 +286,7 @@ def analyze_legendary_setup(symbol, btc_regime):
             "reason": f"Extreme Volatility / Wick Risk (ATR: {atr_pct:.2f}%)"
         }
 
-    # --- SIDEWAYS & CONSOLIDATION FILTER (ADX < 20 Filter) ---
+    # Sideways Market ADX Filter
     adx_4h = calculate_adx(df_4h, 14)
     if adx_4h < 20.0 and symbol not in ["BTCUSDT", "ETHUSDT"]:
         return {
@@ -289,18 +295,17 @@ def analyze_legendary_setup(symbol, btc_regime):
             "reason": f"No Strong Trend / Sideways Market (ADX: {adx_4h:.1f} < 20.0)"
         }
 
-    # Calculate Indicators for 1D
+    # Indicators Calculations
     df_1d['EMA_20'] = df_1d['close'].ewm(span=20, adjust=False).mean()
     df_1d['EMA_50'] = df_1d['close'].ewm(span=50, adjust=False).mean()
     df_1d['RSI'] = calculate_rsi(df_1d['close'], 14)
 
-    # Calculate Indicators for 4H
     df_4h['EMA_20'] = df_4h['close'].ewm(span=20, adjust=False).mean()
     df_4h['EMA_50'] = df_4h['close'].ewm(span=50, adjust=False).mean()
     df_4h['RSI'] = calculate_rsi(df_4h['close'], 14)
     df_4h['Vol_SMA'] = df_4h['volume'].rolling(20).mean()
 
-    # Fast Micro-Structure Indicators (1M Timeframe - Lag Elimination)
+    # Fast Micro-Structure Indicators (1M)
     if df_1m is not None and len(df_1m) >= 10:
         df_1m['EMA_3'] = df_1m['close'].ewm(span=3, adjust=False).mean()
         df_1m['EMA_8'] = df_1m['close'].ewm(span=8, adjust=False).mean()
@@ -317,17 +322,13 @@ def analyze_legendary_setup(symbol, btc_regime):
     rsi_4h = curr_4h['RSI']
     vol_spike = curr_4h['volume'] > (curr_4h['Vol_SMA'] * 1.25)
 
-    # Fast Real-Time Momentum Calculations
     roc_1m = calculate_price_velocity(df_1m)
     vol_spurt, vol_ratio = check_volume_velocity(df_1m)
     
-    # Orderbook Imbalance Calculation
     ob_ratio, bid_vol, ask_vol = fetch_orderbook_imbalance(symbol, depth=20)
-
-    # Derivatives Sentiment
     funding_rate = fetch_funding_rate(symbol)
 
-    # Scoring Algorithm (Institutional Edge Score)
+    # Scoring Algorithm
     score = 50
     confluences = [f"Low Slippage Guard Passed (Spread: {current_spread:.3f}%)"]
 
@@ -339,7 +340,7 @@ def analyze_legendary_setup(symbol, btc_regime):
         score -= 15
         confluences.append("Bearish MTF Alignment (1D+4H)")
 
-    # 2. RSI Oversold/Overbought Squeeze
+    # 2. RSI Oversold/Overbought
     if rsi_4h <= 35:
         score += 20
         confluences.append(f"4H RSI Oversold ({rsi_4h:.1f})")
@@ -352,13 +353,13 @@ def analyze_legendary_setup(symbol, btc_regime):
         score += 10 if score >= 50 else -10
         confluences.append("Institutional Volume Spike")
 
-    # 4. Orderbook Imbalance Depth Filter
+    # 4. Orderbook Imbalance
     if ob_ratio >= 1.3:
         score += 10
-        confluences.append(f"Bullish Orderbook Depth Imbalance (Bid/Ask: {ob_ratio:.2f}x)")
+        confluences.append(f"Bullish OB Imbalance ({ob_ratio:.2f}x)")
     elif ob_ratio <= 0.7:
         score -= 10
-        confluences.append(f"Bearish Orderbook Depth Imbalance (Bid/Ask: {ob_ratio:.2f}x)")
+        confluences.append(f"Bearish OB Imbalance ({ob_ratio:.2f}x)")
 
     # 5. Derivatives Funding Squeeze
     if funding_rate < -0.01:
@@ -368,7 +369,7 @@ def analyze_legendary_setup(symbol, btc_regime):
         score -= 15
         confluences.append(f"Long Flush Scent (Funding: {funding_rate:.4f}%)")
 
-    # 6. INSTANT MOMENTUM & UNLAGGED PUMP/DUMP DETECTION
+    # 6. Instant Momentum (1M)
     if roc_1m >= 1.0 and vol_spurt and fast_ema_bullish:
         score += 15
         confluences.append(f"⚡ Instant Pump Impulse: +{roc_1m:.2f}% (Vol Surge: {vol_ratio:.1f}x)")
@@ -376,15 +377,12 @@ def analyze_legendary_setup(symbol, btc_regime):
         score -= 15
         confluences.append(f"⚡ Instant Dump Impulse: {roc_1m:.2f}% (Vol Surge: {vol_ratio:.1f}x)")
 
-    # 7. STRONG TREND ADX BOOST
+    # 7. ADX Boost
     if adx_4h >= 30.0:
-        if score >= 50:
-            score += 10
-        else:
-            score -= 10
+        score += 10 if score >= 50 else -10
         confluences.append(f"💪 Strong Trend Momentum (4H ADX: {adx_4h:.1f})")
 
-    # 8. DYNAMIC PRICE ACTION LEVEL VERIFICATION (SMART GUARD)
+    # 8. Dynamic Price Action Level Verification
     if score >= 60:
         if chart_struct['is_breakout']:
             score += 15
@@ -405,7 +403,7 @@ def analyze_legendary_setup(symbol, btc_regime):
         else:
             confluences.append(f"Chart Room to Fall: {chart_struct['dist_sup_pct']:.2f}% to Sup")
 
-    # Final Classification Logic with BTC Guard Filter
+    # Final Classification Logic
     signal = "NEUTRAL 🟡"
     bias = "NO TRADE"
 
@@ -424,6 +422,34 @@ def analyze_legendary_setup(symbol, btc_regime):
             signal = "💥 LEGENDARY SHORT"
             bias = "SHORT"
 
+    # =====================================================================
+    # POSITION SIZING & RISK CALCULATION ENGINE (1.0% Capital Risk)
+    # =====================================================================
+    atr_buffer = atr_val * 1.5
+    entry = live_price
+
+    if bias == "LONG":
+        sl = entry - atr_buffer
+        sl_pct = (entry - sl) / entry
+        tp1 = entry * (1 + (sl_pct * 1.5))
+        tp2 = entry * (1 + (sl_pct * 2.0))
+    elif bias == "SHORT":
+        sl = entry + atr_buffer
+        sl_pct = (sl - entry) / entry
+        tp1 = entry * (1 - (sl_pct * 1.5))
+        tp2 = entry * (1 - (sl_pct * 2.0))
+    else:
+        sl, sl_pct, tp1, tp2 = 0.0, 0.0, 0.0, 0.0
+
+    if sl_pct > 0:
+        risk_amount_usdt = USER_CAPITAL_USDT * MAX_ACCOUNT_RISK_PCT  # Exactly $1.00 USDT
+        margin_used_usdt = USER_CAPITAL_USDT * MARGIN_ALLOC_PCT    # $13.00 USDT
+        position_size_usdt = risk_amount_usdt / sl_pct
+        calc_leverage = position_size_usdt / margin_used_usdt
+        recommended_leverage = int(np.clip(np.round(calc_leverage), 1, 10))
+    else:
+        risk_amount_usdt, margin_used_usdt, position_size_usdt, recommended_leverage = 0, 0, 0, 1
+
     return {
         "status": "PASSED",
         "symbol": symbol,
@@ -437,12 +463,21 @@ def analyze_legendary_setup(symbol, btc_regime):
         "support": chart_struct['support'],
         "resistance": chart_struct['resistance'],
         "ob_ratio": ob_ratio,
-        "confluences": confluences
+        "confluences": confluences,
+        "entry": entry,
+        "sl": sl,
+        "sl_pct": sl_pct * 100,
+        "tp1": tp1,
+        "tp2": tp2,
+        "margin_usdt": margin_used_usdt,
+        "risk_usdt": risk_amount_usdt,
+        "pos_size_usdt": position_size_usdt,
+        "leverage": recommended_leverage
     }
 
 def run_legendary_engine():
     print("=" * 80)
-    print("   🏛️ LEGENDARY ENGINE v3.0 (LIVE CHART STRUCTURE & PRICE ACTION VERIFIED) 🏛️")
+    print("   🏛️ LEGENDARY ENGINE v3.0 (LIVE STRUCTURE + 1% RISK EXECUTION CARDS) 🏛️")
     print("=" * 80)
 
     print("\n⏳ Fetching BTC Macro Market Guard...")
@@ -470,31 +505,32 @@ def run_legendary_engine():
     blocked_trades = [r for r in results if "BLOCKED" in r['signal']]
     neutral_trades = [r for r in results if r['bias'] not in ['LONG', 'SHORT'] and "BLOCKED" not in r['signal']]
 
-    # Helper function for dynamic price formatting
     def fmt_p(price):
         return f"{price:.6f}".rstrip('0').rstrip('.') if price < 1 else f"{price:.2f}"
 
-    # Output Printing
     print("\n" + "=" * 80)
-    print("🎯 HIGH-CONVICTION SAFE SLIPPAGE TRADES (Score >= 65 or <= 35)")
+    print("🎯 HIGH-CONVICTION SAFE TRADES (EXECUTION CARDS FOR $100 CAPITAL)")
     print("=" * 80)
     if high_conviction:
         for item in high_conviction:
-            print(f"🪙 {item['symbol']:<10} | Price: ${fmt_p(item['price']):<10} | Score: {item['score']}/100 | Signal: {item['signal']}")
-            print(f"   ├─ Funding Rate: {item['funding']:.4f}% | 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f} | OB Ratio: {item['ob_ratio']:.2f}x")
-            print(f"   ├─ Key Support: ${fmt_p(item['support'])} | Key Resistance: ${fmt_p(item['resistance'])}")
-            print(f"   └─ Confluences: {', '.join(item['confluences'])}\n")
+            print(f"\n🪙 PAIR: {item['symbol']} | Signal: {item['signal']} | Score: {item['score']}/100")
+            print(f"   ├─ Leverage: {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT | Risk: ${item['risk_usdt']:.2f} USDT (1%)")
+            print(f"   ├─ Position Size: ${item['pos_size_usdt']:.2f} USDT Notional")
+            print(f"   ├─ Entry Price : ${fmt_p(item['entry'])}")
+            print(f"   ├─ Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)")
+            print(f"   ├─ Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)")
+            print(f"   ├─ Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)")
+            print(f"   └─ Confluences : {', '.join(item['confluences'])}\n")
 
-        # -------------------------------------------------------------
-        # PUSHBULLET ALERT TRIGGER (Triggered only when signals exist)
-        # -------------------------------------------------------------
+        # Pushbullet Alert Trigger
         alert_title = f"🚨 BINANCE TRADE ALERT ({len(high_conviction)} Signal Found)"
         alert_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n\n"
         for item in high_conviction:
-            alert_body += f"🪙 {item['symbol']} | Signal: {item['signal']}\n"
-            alert_body += f"💰 Price: ${fmt_p(item['price'])} | Score: {item['score']}/100\n"
-            alert_body += f"📊 4H RSI: {item['rsi_4h']:.1f} | ADX: {item['adx_4h']:.1f} | OB: {item['ob_ratio']:.2f}x\n"
-            alert_body += f"🎯 Supp: ${fmt_p(item['support'])} | Res: ${fmt_p(item['resistance'])}\n\n"
+            alert_body += f"🪙 {item['symbol']} | {item['bias']} ({item['score']}/100)\n"
+            alert_body += f"⚡ Lev: {item['leverage']}x | Margin: ${item['margin_usdt']:.1f}\n"
+            alert_body += f"📥 Entry: ${fmt_p(item['entry'])}\n"
+            alert_body += f"🛑 SL: ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%) [Risk: ${item['risk_usdt']:.1f}]\n"
+            alert_body += f"🎯 TP1: ${fmt_p(item['tp1'])} | TP2: ${fmt_p(item['tp2'])}\n\n"
         
         send_pushbullet_notification(alert_title, alert_body)
 
