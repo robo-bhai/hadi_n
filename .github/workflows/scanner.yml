@@ -1,12 +1,16 @@
 name: Binance Market Scanner Bot
 
 on:
-  workflow_dispatch:  # Manual trigger ke liye (Run workflow button)
+  workflow_dispatch:
+
+# Consecutive duplicate runs ko rokne ke liye:
+concurrency:
+  group: scanner-group
+  cancel-in-progress: true
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
