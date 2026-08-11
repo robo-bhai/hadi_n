@@ -522,17 +522,38 @@ def run_legendary_engine():
             print(f"   ├─ Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)")
             print(f"   └─ Confluences : {', '.join(item['confluences'])}\n")
 
-        # Pushbullet Alert Trigger
-        alert_title = f"🚨 BINANCE TRADE ALERT ({len(high_conviction)} Signal Found)"
-        alert_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n\n"
-        for item in high_conviction:
-            alert_body += f"🪙 {item['symbol']} | {item['bias']} ({item['score']}/100)\n"
-            alert_body += f"⚡ Lev: {item['leverage']}x | Margin: ${item['margin_usdt']:.1f}\n"
-            alert_body += f"📥 Entry: ${fmt_p(item['entry'])}\n"
-            alert_body += f"🛑 SL: ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%) [Risk: ${item['risk_usdt']:.1f}]\n"
-            alert_body += f"🎯 TP1: ${fmt_p(item['tp1'])} | TP2: ${fmt_p(item['tp2'])}\n\n"
-        
-        send_pushbullet_notification(alert_title, alert_body)
+        # Pushbullet Alert Trigger - ONLY FOR SIGNALS WITH SCORE >= 75
+        pushbullet_signals = [r for r in high_conviction if r['score'] >= 75]
+
+        if pushbullet_signals:
+            alert_title = f"🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)"
+            alert_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n"
+            alert_body += "========================================\n\n"
+            
+            for item in pushbullet_signals:
+                alert_body += f"🪙 PAIR: {item['symbol']}\n"
+                alert_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
+                alert_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
+                alert_body += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
+                alert_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
+                alert_body += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
+                alert_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
+                alert_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
+                
+                alert_body += "📈 TECHNICAL STATS:\n"
+                alert_body += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
+                alert_body += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x\n"
+                alert_body += f"   • Funding Rate: {item['funding']:.4f}%\n"
+                alert_body += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
+                
+                alert_body += "💡 CONFLUENCES & REASONS:\n"
+                for conf in item['confluences']:
+                    alert_body += f"   ✓ {conf}\n"
+                alert_body += "\n----------------------------------------\n\n"
+            
+            send_pushbullet_notification(alert_title, alert_body)
+        else:
+            print("ℹ️ High-conviction trades scan hue lekin koi bhi signal >= 75 score ka nahi mila. Pushbullet alert skip kar diya gaya.\n")
 
     else:
         print("   (Koi high-probability safe trade spot nahi hui. Capital preserve karein!)\n")
