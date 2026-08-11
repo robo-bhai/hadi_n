@@ -523,7 +523,7 @@ def run_legendary_engine():
             print(f"   └─ Confluences : {', '.join(item['confluences'])}\n")
 
         # Pushbullet Alert Trigger - ONLY FOR SIGNALS WITH SCORE >= 75
-        pushbullet_signals = [r for r in high_conviction if r['score'] >= 75]
+        pushbullet_signals = [r for r in high_conviction if r['score'] >= 65]
 
         if pushbullet_signals:
             alert_title = f"🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)"
