@@ -154,7 +154,7 @@ def calculate_adx(df, period=14):
     df['down'] = df['low'].shift(1) - df['low']
 
     df['+dm'] = ((df['up'] > df['down']) & (df['up'] > 0)) * df['up']
-    df['-dm'] = ((df['down'] > df['up']) & (df['down'] > 0)) * df['down']
+    df['-dm'] = ((df['down'] > df['up']) & (df['down'] > 0)) * df['-dm']
 
     df['atr'] = calculate_atr(df, period)
 
@@ -477,13 +477,21 @@ def analyze_legendary_setup(symbol, btc_regime):
   score = 50
   confluences = [f'Low Slippage Guard Passed (Spread: {current_spread:.3f}%)']
 
+  # Check Exact Multi-Timeframe Alignment States
+  is_mtf_bullish = (
+      curr_1d['close'] > curr_1d['EMA_20']
+      and curr_4h['close'] > curr_4h['EMA_20']
+  )
+  is_mtf_bearish = (
+      curr_1d['close'] < curr_1d['EMA_20']
+      and curr_4h['close'] < curr_4h['EMA_20']
+  )
+
   # 1. Multi-Timeframe Alignment
-  if curr_1d['close'] > curr_1d['EMA_20'] and curr_4h['close'] > curr_4h['EMA_20']:
+  if is_mtf_bullish:
     score += 15
     confluences.append('Bullish MTF Alignment (1D+4H)')
-  elif (
-      curr_1d['close'] < curr_1d['EMA_20'] and curr_4h['close'] < curr_4h['EMA_20']
-  ):
+  elif is_mtf_bearish:
     score -= 15
     confluences.append('Bearish MTF Alignment (1D+4H)')
 
@@ -575,26 +583,33 @@ def analyze_legendary_setup(symbol, btc_regime):
           f"Chart Room to Fall: {chart_struct['dist_sup_pct']:.2f}% to Sup"
       )
 
-  # Final Classification Logic
+  # Final Classification Logic With Full MTF & BTC Regime Strict Guards
   signal = 'NEUTRAL 🟡'
   bias = 'NO TRADE'
 
   if score >= 65:
-    if btc_regime == 'BEARISH' and symbol != 'BTCUSDT':
+    if is_mtf_bearish:
+      signal = '⚠️ BLOCKED LONG (Bearish MTF Trend)'
+      bias = 'HIGH RISK'
+    elif btc_regime == 'BEARISH' and symbol != 'BTCUSDT':
       signal = '⚠️ BLOCKED LONG (BTC Bearish Risk)'
       bias = 'HIGH RISK'
     else:
       signal = '🔥 LEGENDARY LONG'
       bias = 'LONG'
+
   elif score <= 35:
-    if btc_regime == 'BULLISH' and symbol != 'BTCUSDT':
+    if is_mtf_bullish:
+      signal = '⚠️ BLOCKED SHORT (Bullish MTF Trend)'
+      bias = 'HIGH RISK'
+    elif btc_regime == 'BULLISH' and symbol != 'BTCUSDT':
       signal = '⚠️ BLOCKED SHORT (BTC Bullish Risk)'
       bias = 'HIGH RISK'
     else:
       signal = '💥 LEGENDARY SHORT'
       bias = 'SHORT'
 
-  # Position Sizing & Risk Calculation Engine (1.0% Capital Risk)
+  # Position Sizing & Risk Calculation Engine (1.0% Capital Risk & Strictly 1x-3x Leverage)
   atr_buffer = atr_val * 1.5
   entry = live_price
 
@@ -618,7 +633,8 @@ def analyze_legendary_setup(symbol, btc_regime):
     margin_used_usdt = USER_CAPITAL_USDT * MARGIN_ALLOC_PCT  # $13.00 USDT
     position_size_usdt = risk_amount_usdt / sl_pct
     calc_leverage = position_size_usdt / margin_used_usdt
-    recommended_leverage = int(np.clip(np.round(calc_leverage), 1, 10))
+    # HARD LEVERAGE CAP: Strictly constrained to max 3x
+    recommended_leverage = int(np.clip(np.round(calc_leverage), 1, 3))
   else:
     risk_amount_usdt, margin_used_usdt, position_size_usdt, recommended_leverage = (
         0,
@@ -723,8 +739,11 @@ def run_legendary_engine():
       print(f"   ├─ Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)")
       print(f"   └─ Confluences : {', '.join(item['confluences'])}\n")
 
-    # Pushbullet Alert Trigger - SYNCHRONIZED FOR SIGNALS WITH SCORE >= 65
-    pushbullet_signals = [r for r in high_conviction if r['score'] >= 65]
+    # Pushbullet Alert Trigger - Dynamic Minimum Score Threshold (75 for CHOPPY, 65 for Trending)
+    min_score_required = 75 if btc_regime == 'CHOPPY' else 65
+    pushbullet_signals = [
+        r for r in high_conviction if r['score'] >= min_score_required
+    ]
 
     if pushbullet_signals:
       alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
@@ -776,7 +795,7 @@ def run_legendary_engine():
       send_pushbullet_notification(alert_title, alert_body)
     else:
       print(
-          'ℹ️ High-conviction trades scan hue lekin koi bhi signal >= 65 score'
+          f'ℹ️ High-conviction trades scan hue lekin koi bhi signal >= {min_score_required} score'
           ' ka nahi mila. Pushbullet alert skip kar diya gaya.\n'
       )
 
@@ -788,7 +807,7 @@ def run_legendary_engine():
 
   if blocked_trades:
     print('=' * 80)
-    print('🛡️ BTC GUARD BLOCKED TRADES')
+    print('🛡️ BTC / MTF GUARD BLOCKED TRADES')
     print('=' * 80)
     for item in blocked_trades:
       print(
@@ -796,8 +815,8 @@ def run_legendary_engine():
           f" {item['score']}/100"
       )
       print(
-          f'   └─ Reason: Macro BTC Trend ({btc_regime}) Altcoin direction ke'
-          ' opposite hai.\n'
+          f'   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade'
+          ' direction ke opposite hai.\n'
       )
 
   if rejected:
