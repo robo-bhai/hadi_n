@@ -207,10 +207,7 @@ def fetch_oi_change_delta(symbol):
 
 
 def analyze_dynamic_structure(df_4h):
-  """Reads live chart candles to detect real Price Action Support & Resistance.
-
-  Uses Body Closes to guard against Stop-Loss hunting wicks.
-  """
+  """Reads live chart candles to detect real Price Action Support & Resistance."""
   if df_4h is None or len(df_4h) < 30:
     return None
 
@@ -385,7 +382,7 @@ def get_btc_macro_regime():
 
 
 def analyze_legendary_setup(symbol, btc_regime):
-  # 1. Anti-Slippage Filter: Live Spread Verification
+  # 1. Anti-Slippage Filter
   is_liquid, current_spread = check_liquidity_and_spread(symbol)
   if not is_liquid:
     return {
@@ -412,7 +409,6 @@ def analyze_legendary_setup(symbol, btc_regime):
   atr_val = df_4h['ATR'].iloc[-1]
   atr_pct = (atr_val / df_4h['close'].iloc[-1]) * 100
 
-  # Dynamic Volatility Cutoff
   if atr_pct > 5.0 and symbol not in ['BTCUSDT', 'ETHUSDT']:
     return {
         'symbol': symbol,
@@ -448,7 +444,7 @@ def analyze_legendary_setup(symbol, btc_regime):
   df_4h['RSI'] = calculate_rsi(df_4h['close'], 14)
   df_4h['Vol_SMA'] = df_4h['volume'].rolling(20).mean()
 
-  # Fast Micro-Structure Indicators (1M)
+  # Micro-Structure (1M)
   if df_1m is not None and len(df_1m) >= 10:
     df_1m['EMA_3'] = df_1m['close'].ewm(span=3, adjust=False).mean()
     df_1m['EMA_8'] = df_1m['close'].ewm(span=8, adjust=False).mean()
@@ -477,7 +473,6 @@ def analyze_legendary_setup(symbol, btc_regime):
   score = 50
   confluences = [f'Low Slippage Guard Passed (Spread: {current_spread:.3f}%)']
 
-  # Check Exact Multi-Timeframe Alignment States
   is_mtf_bullish = (
       curr_1d['close'] > curr_1d['EMA_20']
       and curr_4h['close'] > curr_4h['EMA_20']
@@ -523,7 +518,7 @@ def analyze_legendary_setup(symbol, btc_regime):
     score -= 10
     confluences.append(f'Bearish OB Imbalance ({ob_ratio:.2f}x)')
 
-  # 5. Derivatives Funding & Open Interest (OI) Squeeze
+  # 5. Derivatives Funding & Open Interest Squeeze
   if funding_rate < -0.01:
     score += 15
     confluences.append(f'Short Squeeze Scent (Funding: {funding_rate:.4f}%)')
@@ -583,7 +578,7 @@ def analyze_legendary_setup(symbol, btc_regime):
           f"Chart Room to Fall: {chart_struct['dist_sup_pct']:.2f}% to Sup"
       )
 
-  # Final Classification Logic With Full MTF & BTC Regime Strict Guards
+  # Final Classification Logic
   signal = 'NEUTRAL 🟡'
   bias = 'NO TRADE'
 
@@ -609,7 +604,7 @@ def analyze_legendary_setup(symbol, btc_regime):
       signal = '💥 LEGENDARY SHORT'
       bias = 'SHORT'
 
-  # Position Sizing & Risk Calculation Engine (1.0% Capital Risk & Strictly 1x-3x Leverage)
+  # Position Sizing & Risk Engine
   atr_buffer = atr_val * 1.5
   entry = live_price
 
@@ -627,13 +622,10 @@ def analyze_legendary_setup(symbol, btc_regime):
     sl, sl_pct, tp1, tp2 = 0.0, 0.0, 0.0, 0.0
 
   if sl_pct > 0:
-    risk_amount_usdt = (
-        USER_CAPITAL_USDT * MAX_ACCOUNT_RISK_PCT
-    )  # Exactly $1.00 USDT
+    risk_amount_usdt = USER_CAPITAL_USDT * MAX_ACCOUNT_RISK_PCT  # $1.00 USDT
     margin_used_usdt = USER_CAPITAL_USDT * MARGIN_ALLOC_PCT  # $13.00 USDT
     position_size_usdt = risk_amount_usdt / sl_pct
     calc_leverage = position_size_usdt / margin_used_usdt
-    # HARD LEVERAGE CAP: Strictly constrained to max 3x
     recommended_leverage = int(np.clip(np.round(calc_leverage), 1, 3))
   else:
     risk_amount_usdt, margin_used_usdt, position_size_usdt, recommended_leverage = (
@@ -700,7 +692,7 @@ def run_legendary_engine():
         rejected.append(res)
     time.sleep(0.04)
 
-  # Sort By Institutional Score Highest to Lowest
+  # Sort By Score Highest to Lowest
   results.sort(key=lambda x: x['score'], reverse=True)
 
   high_conviction = [r for r in results if r['bias'] in ['LONG', 'SHORT']]
@@ -738,72 +730,82 @@ def run_legendary_engine():
       print(f"   ├─ Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)")
       print(f"   ├─ Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)")
       print(f"   └─ Confluences : {', '.join(item['confluences'])}\n")
-
-    # Pushbullet Alert Trigger - Dynamic Minimum Score Threshold (75 for CHOPPY, 65 for Trending)
-    min_score_required = 75 if btc_regime == 'CHOPPY' else 65
-    pushbullet_signals = [
-        r for r in high_conviction if r['score'] >= min_score_required
-    ]
-
-    if pushbullet_signals:
-      alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
-      alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
-      alert_body += '========================================\n\n'
-
-      for item in pushbullet_signals:
-        alert_body += f"🪙 PAIR: {item['symbol']}\n"
-        alert_body += (
-            f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
-        )
-        alert_body += (
-            f"⚙️ Execution: Leverage {item['leverage']}x | Margin:"
-            f" ${item['margin_usdt']:.2f} USDT\n"
-        )
-        alert_body += (
-            f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk:"
-            f" ${item['risk_usdt']:.2f} USDT (1%)\n"
-        )
-        alert_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
-        alert_body += (
-            f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
-        )
-        alert_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
-        alert_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
-
-        alert_body += '📈 QUANT STATS:\n'
-        alert_body += (
-            f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
-        )
-        alert_body += (
-            f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI"
-            f" Delta: {item['oi_delta']:+.2f}%\n"
-        )
-        alert_body += (
-            f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate:"
-            f" {item['funding']:.4f}%\n"
-        )
-        alert_body += (
-            f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res"
-            f" ${fmt_p(item['resistance'])}\n\n"
-        )
-
-        alert_body += '💡 CONFLUENCES & REASONS:\n'
-        for conf in item['confluences']:
-          alert_body += f'   ✓ {conf}\n'
-        alert_body += '\n----------------------------------------\n\n'
-
-      send_pushbullet_notification(alert_title, alert_body)
-    else:
-      print(
-          f'ℹ️ High-conviction trades scan hue lekin koi bhi signal >= {min_score_required} score'
-          ' ka nahi mila. Pushbullet alert skip kar diya gaya.\n'
-      )
-
   else:
     print(
         '   (Koi high-probability safe trade spot nahi hui. Capital preserve'
         ' karein!)\n'
     )
+
+  # Pushbullet Alert Logic (Trade Alert vs Motivational Status)
+  min_score_required = 75 if btc_regime == 'CHOPPY' else 65
+  pushbullet_signals = [
+      r for r in high_conviction if r['score'] >= min_score_required
+  ]
+
+  if pushbullet_signals:
+    alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
+    alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
+    alert_body += '========================================\n\n'
+
+    for item in pushbullet_signals:
+      alert_body += f"🪙 PAIR: {item['symbol']}\n"
+      alert_body += (
+          f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
+      )
+      alert_body += (
+          f"⚙️ Execution: Leverage {item['leverage']}x | Margin:"
+          f" ${item['margin_usdt']:.2f} USDT\n"
+      )
+      alert_body += (
+          f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk:"
+          f" ${item['risk_usdt']:.2f} USDT (1%)\n"
+      )
+      alert_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
+      alert_body += (
+          f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
+      )
+      alert_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
+      alert_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
+
+      alert_body += '📈 QUANT STATS:\n'
+      alert_body += (
+          f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
+      )
+      alert_body += (
+          f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta:"
+          f' {item["oi_delta"]:+.2f}%\n'
+      )
+      alert_body += (
+          f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate:"
+          f" {item['funding']:.4f}%\n"
+      )
+      alert_body += (
+          f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res"
+          f" ${fmt_p(item['resistance'])}\n\n"
+      )
+
+      alert_body += '💡 CONFLUENCES & REASONS:\n'
+      for conf in item['confluences']:
+        alert_body += f'   ✓ {conf}\n'
+      alert_body += '\n----------------------------------------\n\n'
+
+    send_pushbullet_notification(alert_title, alert_body)
+
+  else:
+    # Send Motivational Status Pushbullet Notification when NO trade setup is valid
+    alert_title = '🛡️ SCAN COMPLETE: Capital Preservation Active'
+    alert_body = (
+        f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
+        f'🔍 Scanned Pairs: {len(PAIRS)} | High-Conviction Trades: 0\n\n'
+        f'💡 STATUS: Market condition is currently noisy/choppy. No trade'
+        f' reached the strict {min_score_required}+ score threshold.\n\n'
+        '🧠 TRADER MOTIVATION:\n'
+        '"Sitting on your hands IS an active trading position! Cash is a top'
+        ' asset during sideways markets. Protecting your capital today gives'
+        ' you firepower for tomorrow\'s 10x moves." 💎⚡\n\n'
+        '✅ Engine running smoothly. Next automatic scan in 15 mins.'
+    )
+    send_pushbullet_notification(alert_title, alert_body)
 
   if blocked_trades:
     print('=' * 80)
