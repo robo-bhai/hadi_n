@@ -521,13 +521,17 @@ def analyze_legendary_setup(symbol, btc_regime):
     confluences.append(f'Short Squeeze Scent (Funding: {funding_rate:.4f}%)')
     if oi_delta >= 2.5:
       score += 10
-      confluences.append(f'🔥 Institutional Money Flow (15m OI Surge: +{oi_delta:.2f}%)')
+      confluences.append(
+          f'🔥 Institutional Money Flow (15m OI Surge: +{oi_delta:.2f}%)'
+      )
   elif funding_rate > 0.03:
     score -= 15
     confluences.append(f'Long Flush Scent (Funding: {funding_rate:.4f}%)')
     if oi_delta >= 2.5:
       score -= 10
-      confluences.append(f'⚠️ Aggressive Long Leverage Spike (OI: +{oi_delta:.2f}%)')
+      confluences.append(
+          f'⚠️ Aggressive Long Leverage Spike (OI: +{oi_delta:.2f}%)'
+      )
 
   # 6. Instant Momentum (1M)
   if roc_1m >= 1.0 and vol_spurt and fast_ema_bullish:
