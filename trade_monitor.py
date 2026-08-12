@@ -13,17 +13,23 @@ except ImportError:
     MYSQL_AVAILABLE = False
 
 # =========================================================
-# ⚙️ API ENDPOINTS & CONFIG
+# ⚙️ API ENDPOINTS & CONFIG (BINANCE VISION INTEGRATED)
 # =========================================================
-BINANCE_SPOT_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_SPOT_TICKER = "https://api.binance.com/api/v3/ticker/price"
-BINANCE_FUTURES_TICKER = "https://fapi.binance.com/fapi/v1/ticker/price"
+BINANCE_SPOT_URL = 'https://data-api.binance.vision/api/v3/klines'
+BINANCE_BOOK_TICKER_URL = 'https://data-api.binance.vision/api/v3/ticker/bookTicker'
+BINANCE_DEPTH_URL = 'https://data-api.binance.vision/api/v3/depth'
+BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
+
 BINANCE_FEE_RATE = 0.00075 
 
 # =========================================================
 # 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR
 # =========================================================
 def get_db_connection():
+    """
+    Responsive DB Engine: Remote MySQL (Aiven/Secrets) se connect karega.
+    Agar fail ho ya credentials na ho toh Local SQLite par fallback kar jayega.
+    """
     db_host = os.environ.get("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
     db_user = os.environ.get("DB_USER", "avnadmin")
     db_pass = os.environ.get("DB_PASS", os.environ.get("DB_PASSWORD", ""))
@@ -89,7 +95,7 @@ def send_pushbullet_notification(title, body):
         print(f"❌ Pushbullet Request Error: {e}")
 
 # =========================================================
-# 📊 ACCURATE BINANCE LIVE PRICE FETCH (SPOT + FUTURES)
+# 📊 ACCURATE BINANCE VISION LIVE PRICE FETCH
 # =========================================================
 def fetch_live_price(symbol):
     if not symbol:
@@ -97,29 +103,40 @@ def fetch_live_price(symbol):
     
     clean_symbol = str(symbol).strip().upper()
     
-    # 1. Try Spot Ticker
+    # 1. Fetch via Binance Vision Book Ticker Endpoint
     try:
-        res = requests.get(f"{BINANCE_SPOT_TICKER}?symbol={clean_symbol}", timeout=4)
+        url = f"{BINANCE_BOOK_TICKER_URL}?symbol={clean_symbol}"
+        res = requests.get(url, timeout=4)
         if res.status_code == 200:
-            val = float(res.json()['price'])
-            if val > 0:
-                return val
+            data = res.json()
+            bid = float(data.get('bidPrice', 0))
+            ask = float(data.get('askPrice', 0))
+            if bid > 0 and ask > 0:
+                return (bid + ask) / 2.0
+            elif bid > 0:
+                return bid
+            elif ask > 0:
+                return ask
     except Exception as e:
-        print(f"⚠️ Spot fetch failed for {clean_symbol}: {e}")
+        print(f"⚠️ Book Ticker fetch failed for {clean_symbol}: {e}")
 
-    # 2. Try Futures Ticker (Fallback)
+    # 2. Fallback via Binance Futures Funding Endpoint
     try:
-        res = requests.get(f"{BINANCE_FUTURES_TICKER}?symbol={clean_symbol}", timeout=4)
+        url = f"{BINANCE_FUTURES_FUNDING_URL}?symbol={clean_symbol}"
+        res = requests.get(url, timeout=4)
         if res.status_code == 200:
-            val = float(res.json()['price'])
+            val = float(res.json().get('markPrice', 0))
             if val > 0:
                 return val
     except Exception as e:
-        print(f"⚠️ Futures fetch failed for {clean_symbol}: {e}")
+        print(f"⚠️ Futures Funding fetch failed for {clean_symbol}: {e}")
 
     print(f"❌ ERROR: Live price not found for {clean_symbol}")
     return None
 
+# =========================================================
+# 🕯️ DOWNLOAD 1m CANDLES FROM TRADE START TIME TO NOW
+# =========================================================
 def fetch_full_trade_klines(symbol, start_time_ms):
     clean_symbol = str(symbol).strip().upper()
     all_candles = []
@@ -141,19 +158,24 @@ def fetch_full_trade_klines(symbol, start_time_ms):
                 current_start = last_candle_time + 60000
             else:
                 break
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Error fetching klines for {clean_symbol}: {e}")
             break
 
     if not all_candles:
         return None
 
+    # DataFrame creation for candles
     df = pd.DataFrame(all_candles, columns=['time', 'open', 'high', 'low', 'close', '_', '_', '_', '_', '_', '_', '_'])
-    for col in ['time', 'high', 'low', 'close']:
+    for col in ['time', 'open', 'high', 'low', 'close']:
         df[col] = df[col].astype(float)
+    
+    # Chronological Sorting (Ensure 100% Sequence Order)
+    df = df.sort_values(by='time', ascending=True).reset_index(drop=True)
     return df
 
 # =========================================================
-# 🔄 PROCESS ACTIVE TRADES & TIMELINE TRACKING
+# 🔄 PROCESS ACTIVE TRADES (SEQUENTIAL CANDLE EVALUATION)
 # =========================================================
 def process_active_trades():
     conn, db_type = get_db_connection()
@@ -185,25 +207,45 @@ def process_active_trades():
         status = 'ACTIVE'
         gross_pnl = 0.0
 
+        # Sequential Evaluation Candle-by-Candle
         for _, row in df.iterrows():
             c_time_ms = row['time']
-            c_high, c_low, c_close = row['high'], row['low'], row['close']
+            c_open, c_high, c_low, c_close = row['open'], row['high'], row['low'], row['close']
             time_elapsed_seconds = (c_time_ms - start_ms) / 1000.0
 
             if direction == "LONG":
-                if c_low <= sl_p:
-                    status = 'CLOSED_SL'
-                    gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
-                    break
-                elif c_high >= tp2_p:
-                    status = 'CLOSED_TP2'
-                    gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
-                    break
-                elif c_high >= tp1_p:
-                    status = 'CLOSED_TP1'
-                    gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
-                    break
-                elif time_elapsed_seconds >= 86400:
+                # Check intra-candle movement based on candle direction
+                if c_close >= c_open:
+                    # Bullish Candle: Low comes first, then High
+                    if c_low <= sl_p:
+                        status = 'CLOSED_SL'
+                        gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
+                        break
+                    elif c_high >= tp2_p:
+                        status = 'CLOSED_TP2'
+                        gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
+                        break
+                    elif c_high >= tp1_p:
+                        status = 'CLOSED_TP1'
+                        gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
+                        break
+                else:
+                    # Bearish Candle: High comes first, then Low
+                    if c_high >= tp2_p:
+                        status = 'CLOSED_TP2'
+                        gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
+                        break
+                    elif c_high >= tp1_p:
+                        status = 'CLOSED_TP1'
+                        gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
+                        break
+                    elif c_low <= sl_p:
+                        status = 'CLOSED_SL'
+                        gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
+                        break
+
+                # 24 Hours Exit Rule
+                if time_elapsed_seconds >= 86400:
                     candle_gross_pnl = pos_val * ((c_close - entry_p) / entry_p)
                     entry_fee = pos_val * BINANCE_FEE_RATE
                     exit_val = max(0, pos_val + candle_gross_pnl)
@@ -215,20 +257,39 @@ def process_active_trades():
                         status = 'CLOSED_24H_PROFIT'
                         gross_pnl = candle_gross_pnl
                         break
+
             else:  # SHORT Direction
-                if c_high >= sl_p:
-                    status = 'CLOSED_SL'
-                    gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
-                    break
-                elif c_low <= tp2_p:
-                    status = 'CLOSED_TP2'
-                    gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
-                    break
-                elif c_low <= tp1_p:
-                    status = 'CLOSED_TP1'
-                    gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
-                    break
-                elif time_elapsed_seconds >= 86400:
+                if c_close <= c_open:
+                    # Bearish Candle: High comes first, then Low
+                    if c_high >= sl_p:
+                        status = 'CLOSED_SL'
+                        gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
+                        break
+                    elif c_low <= tp2_p:
+                        status = 'CLOSED_TP2'
+                        gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
+                        break
+                    elif c_low <= tp1_p:
+                        status = 'CLOSED_TP1'
+                        gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
+                        break
+                else:
+                    # Bullish Candle: Low comes first, then High
+                    if c_low <= tp2_p:
+                        status = 'CLOSED_TP2'
+                        gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
+                        break
+                    elif c_low <= tp1_p:
+                        status = 'CLOSED_TP1'
+                        gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
+                        break
+                    elif c_high >= sl_p:
+                        status = 'CLOSED_SL'
+                        gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
+                        break
+
+                # 24 Hours Exit Rule
+                if time_elapsed_seconds >= 86400:
                     candle_gross_pnl = pos_val * ((entry_p - c_close) / entry_p)
                     entry_fee = pos_val * BINANCE_FEE_RATE
                     exit_val = max(0, pos_val + candle_gross_pnl)
@@ -241,6 +302,7 @@ def process_active_trades():
                         gross_pnl = candle_gross_pnl
                         break
 
+        # If trade closed in sequence, update DB & portfolio
         if status != 'ACTIVE':
             entry_fee = pos_val * BINANCE_FEE_RATE
             exit_value = max(0, pos_val + gross_pnl)
@@ -316,7 +378,7 @@ def generate_and_send_report():
         for r in running_trades:
             t_id, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val, lev, status = r
             
-            # Direct Live Fetch
+            # Direct Live Fetch via Binance Vision Ticker
             fetched_live = fetch_live_price(symbol)
             live_p = fetched_live if fetched_live is not None else entry_p
 
