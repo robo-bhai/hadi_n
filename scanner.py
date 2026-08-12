@@ -3,6 +3,7 @@ import time
 import numpy as np
 import pandas as pd
 import requests
+import ssl
 
 # Conditional MySQL Connector (Remote / GitHub Secrets)
 try:
@@ -53,8 +54,6 @@ MAX_ACCOUNT_RISK_PCT = 0.01
 # =========================================================
 # 🔌 RESPONSIVE MYSQL & DATABASE CONNECTION ENGINE
 # =========================================================
-import ssl # Make sure 'import ssl' is at top of file
-
 def get_db_connection():
     """
     Connects to Remote MySQL (Aiven/GitHub Secrets) with Responsive Multi-Engine SSL.
@@ -554,6 +553,7 @@ def run_legendary_engine():
     min_score_required = 75 if btc_regime == 'CHOPPY' else 65
     pushbullet_signals = [r for r in high_conviction if r['score'] >= min_score_required]
 
+    # ONLY SEND PUSHBULLET NOTIFICATION WHEN VALID SIGNALS ARE GENERATED
     if pushbullet_signals:
         alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
         alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
@@ -580,16 +580,7 @@ def run_legendary_engine():
 
         send_pushbullet_notification(alert_title, alert_body)
     else:
-        alert_title = '🛡️ SCAN COMPLETE: Capital Preservation Active'
-        alert_body = (
-            f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
-            f'🔍 Scanned Pairs: {len(PAIRS)} | High-Conviction Trades: 0\n\n'
-            f'💡 STATUS: Market condition is currently noisy/choppy. No trade reached the strict {min_score_required}+ score threshold.\n\n'
-            '🧠 TRADER MOTIVATION:\n'
-            '"Sitting on your hands IS an active trading position! Cash is a top asset during sideways markets. Protecting your capital today gives you firepower for tomorrow\'s 10x moves." 💎⚡\n\n'
-            '✅ Engine running smoothly. Next automatic scan in 15 mins.'
-        )
-        send_pushbullet_notification(alert_title, alert_body)
+        print("ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification.")
 
     if blocked_trades:
         print('=' * 80)
