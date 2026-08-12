@@ -53,10 +53,12 @@ MAX_ACCOUNT_RISK_PCT = 0.01
 # =========================================================
 # 🔌 RESPONSIVE MYSQL & DATABASE CONNECTION ENGINE
 # =========================================================
+import ssl # Make sure 'import ssl' is at top of file
+
 def get_db_connection():
     """
-    Connects to Remote MySQL (Aiven/GitHub Secrets) if credentials exist.
-    Falls back gracefully if variables are not provided.
+    Connects to Remote MySQL (Aiven/GitHub Secrets) with Responsive Multi-Engine SSL.
+    Falls back gracefully if variables are not provided or fails.
     """
     db_host = os.getenv("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
     db_user = os.getenv("DB_USER", "avnadmin")
@@ -65,6 +67,26 @@ def get_db_connection():
     db_port = int(os.getenv("DB_PORT", 23464))
 
     if MYSQL_AVAILABLE and db_pass:
+        # Attempt 1: Native SSL Context (Fixes Termux & Python 3.12 SSL Handshake Timeout)
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+
+            conn = mysql.connector.connect(
+                host=db_host,
+                port=db_port,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                ssl_context=ssl_ctx,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception:
+            pass
+
+        # Attempt 2: Standard Connector SSL Parameters (Fallback)
         try:
             conn = mysql.connector.connect(
                 host=db_host,
@@ -73,12 +95,13 @@ def get_db_connection():
                 password=db_pass,
                 database=db_name,
                 ssl_disabled=False,
-                connect_timeout=10
+                ssl_verify_cert=False,
+                connect_timeout=30
             )
             return conn, "MYSQL"
         except Exception as e:
             print(f"⚠️ Remote MySQL Connection Error: {e}")
-    
+
     return None, "NONE"
 
 # =========================================================

@@ -23,27 +23,50 @@ BINANCE_FUTURES_OI_URL = "https://fapi.binance.com/fapi/v1/openInterest"
 # =========================================================
 # 🔌 DATABASE CONNECTION ENGINE (MYSQL + SQLITE FALLBACK)
 # =========================================================
+import ssl # Make sure 'import ssl' is at top of file
+
 def get_db_connection():
     """
-    Connects to MySQL if GitHub Secrets / Env Variables exist.
+    Connects to MySQL if GitHub Secrets / Env Variables exist with SSL Support.
     Falls back to Local SQLite database seamlessly if MySQL is unavailable.
     """
-    db_host = os.environ.get("DB_HOST")
-    db_user = os.environ.get("DB_USER")
-    db_pass = os.environ.get("DB_PASSWORD")
-    db_name = os.environ.get("DB_NAME")
-    db_port = os.environ.get("DB_PORT", "3306")
+    db_host = os.environ.get("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
+    db_user = os.environ.get("DB_USER", "avnadmin")
+    db_pass = os.environ.get("DB_PASS", os.environ.get("DB_PASSWORD", ""))
+    db_name = os.environ.get("DB_NAME", "defaultdb")
+    db_port = int(os.environ.get("DB_PORT", "23464"))
 
-    # Try MySQL if Credentials exist in GitHub Secrets / Env Variables
     if MYSQL_AVAILABLE and db_host and db_user and db_pass and db_name:
+        # Attempt 1: Native SSL Context
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+
+            conn = mysql.connector.connect(
+                host=db_host,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                port=db_port,
+                ssl_context=ssl_ctx,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception:
+            pass
+
+        # Attempt 2: Standard SSL Fallback
         try:
             conn = mysql.connector.connect(
                 host=db_host,
                 user=db_user,
                 password=db_pass,
                 database=db_name,
-                port=int(db_port),
-                connect_timeout=10
+                port=db_port,
+                ssl_disabled=False,
+                ssl_verify_cert=False,
+                connect_timeout=30
             )
             return conn, "MYSQL"
         except Exception as e:
@@ -52,6 +75,7 @@ def get_db_connection():
     # Fallback to Local SQLite DB
     conn = sqlite3.connect("trading_system.db")
     return conn, "SQLITE"
+
 
 def init_db():
     """
