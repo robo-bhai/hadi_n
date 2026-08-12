@@ -2,8 +2,6 @@ name: Manual Trade Monitor & Pushbullet Report
 
 on:
   workflow_dispatch: # Allows manual trigger from GitHub UI anytime
-  schedule:
-    - cron: '0 */6 * * *' # Auto run every 6 hours (Optional)
 
 jobs:
   run-monitor:
@@ -32,4 +30,3 @@ jobs:
           DB_PORT: ${{ secrets.DB_PORT }}
           PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
         run: python trade_monitor.py
-        
