@@ -16,17 +16,14 @@ except ImportError:
 # ⚙️ API ENDPOINTS & CONFIG
 # =========================================================
 BINANCE_SPOT_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
+BINANCE_SPOT_TICKER = "https://api.binance.com/api/v3/ticker/price"
+BINANCE_FUTURES_TICKER = "https://fapi.binance.com/fapi/v1/ticker/price"
 BINANCE_FEE_RATE = 0.00075 
 
 # =========================================================
 # 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR
 # =========================================================
 def get_db_connection():
-    """
-    Responsive DB Engine: Remote MySQL (Aiven/Secrets) se connect karega.
-    Agar fail ho ya credentials na ho toh Local SQLite par fallback kar jayega.
-    """
     db_host = os.environ.get("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
     db_user = os.environ.get("DB_USER", "avnadmin")
     db_pass = os.environ.get("DB_PASS", os.environ.get("DB_PASSWORD", ""))
@@ -34,7 +31,6 @@ def get_db_connection():
     db_port = int(os.environ.get("DB_PORT", "23464"))
 
     if MYSQL_AVAILABLE and db_pass:
-        # Attempt 1: Native SSL Context (Termux / Actions / Ubuntu)
         try:
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
@@ -53,7 +49,6 @@ def get_db_connection():
         except Exception:
             pass
 
-        # Attempt 2: Standard SSL Fallback
         try:
             conn = mysql.connector.connect(
                 host=db_host,
@@ -69,7 +64,6 @@ def get_db_connection():
         except Exception as e:
             print(f"⚠️ Remote MySQL Error: {e}. Falling back to SQLite...")
 
-    # Fallback to Local SQLite DB
     conn = sqlite3.connect("trading_system.db")
     return conn, "SQLITE"
 
@@ -95,24 +89,45 @@ def send_pushbullet_notification(title, body):
         print(f"❌ Pushbullet Request Error: {e}")
 
 # =========================================================
-# 📊 BINANCE MARKET DATA FETCHERS
+# 📊 ACCURATE BINANCE LIVE PRICE FETCH (SPOT + FUTURES)
 # =========================================================
 def fetch_live_price(symbol):
+    if not symbol:
+        return None
+    
+    clean_symbol = str(symbol).strip().upper()
+    
+    # 1. Try Spot Ticker
     try:
-        res = requests.get(f"{BINANCE_TICKER_URL}?symbol={symbol}", timeout=4)
+        res = requests.get(f"{BINANCE_SPOT_TICKER}?symbol={clean_symbol}", timeout=4)
         if res.status_code == 200:
-            return float(res.json()['price'])
-    except Exception:
-        pass
+            val = float(res.json()['price'])
+            if val > 0:
+                return val
+    except Exception as e:
+        print(f"⚠️ Spot fetch failed for {clean_symbol}: {e}")
+
+    # 2. Try Futures Ticker (Fallback)
+    try:
+        res = requests.get(f"{BINANCE_FUTURES_TICKER}?symbol={clean_symbol}", timeout=4)
+        if res.status_code == 200:
+            val = float(res.json()['price'])
+            if val > 0:
+                return val
+    except Exception as e:
+        print(f"⚠️ Futures fetch failed for {clean_symbol}: {e}")
+
+    print(f"❌ ERROR: Live price not found for {clean_symbol}")
     return None
 
 def fetch_full_trade_klines(symbol, start_time_ms):
+    clean_symbol = str(symbol).strip().upper()
     all_candles = []
     current_start = start_time_ms
     now_ms = int(datetime.now().timestamp() * 1000)
 
     while current_start < now_ms:
-        url = f"{BINANCE_SPOT_URL}?symbol={symbol}&interval=1m&startTime={current_start}&limit=1000"
+        url = f"{BINANCE_SPOT_URL}?symbol={clean_symbol}&interval=1m&startTime={current_start}&limit=1000"
         try:
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
@@ -247,18 +262,15 @@ def process_active_trades():
 # 📋 GENERATE & SEND FORMATTED PUSHBULLET REPORT
 # =========================================================
 def generate_and_send_report():
-    # 1. First process active trades against history
     process_active_trades()
 
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
-    # 2. Fetch Portfolio Capital
     cursor.execute("SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = 1")
     port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
     total_capital, avail_capital, frozen_margin = port_row
 
-    # 3. Calculate Overall Win Rate & Total Realized PnL from ALL Trades
     cursor.execute("SELECT status, pnl FROM trades")
     all_trades = cursor.fetchall()
     
@@ -275,12 +287,9 @@ def generate_and_send_report():
                 win_count += 1
 
     win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
-
-    # Calculate Total ROI % based on Initial Capital
     initial_capital = max(1.0, total_capital - total_realized_pnl)
     total_roi = (total_realized_pnl / initial_capital) * 100
 
-    # 4. Fetch ONLY Active/Running Trades
     cursor.execute("SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value, leverage, status FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
     running_trades = cursor.fetchall()
     conn.close()
@@ -288,7 +297,6 @@ def generate_and_send_report():
     def fmt_p(p):
         return f"{p:.6f}".rstrip('0').rstrip('.') if p and p < 1 else f"{p:.2f}" if p else "0.00"
 
-    # Build Pushbullet Body
     report_title = f"⚡ LIVE PORTFOLIO & RUNNING TRADES ({len(running_trades)})"
     
     report_body = "💰 PORTFOLIO STATS\n"
@@ -307,7 +315,10 @@ def generate_and_send_report():
         report_body += "----------------------------------------\n"
         for r in running_trades:
             t_id, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val, lev, status = r
-            live_p = fetch_live_price(symbol) or entry_p
+            
+            # Direct Live Fetch
+            fetched_live = fetch_live_price(symbol)
+            live_p = fetched_live if fetched_live is not None else entry_p
 
             if direction == 'LONG':
                 float_pnl = pos_val * ((live_p - entry_p) / entry_p)
@@ -332,4 +343,3 @@ def generate_and_send_report():
 
 if __name__ == "__main__":
     generate_and_send_report()
-    
