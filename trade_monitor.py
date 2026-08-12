@@ -247,61 +247,89 @@ def process_active_trades():
 # 📋 GENERATE & SEND FORMATTED PUSHBULLET REPORT
 # =========================================================
 def generate_and_send_report():
+    # 1. First process active trades against history
     process_active_trades()
+
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value, leverage, status, pnl FROM trades ORDER BY id DESC")
-    rows = cursor.fetchall()
-    conn.close()
+    # 2. Fetch Portfolio Capital
+    cursor.execute("SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = 1")
+    port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
+    total_capital, avail_capital, frozen_margin = port_row
 
-    if not rows:
-        send_pushbullet_notification("📊 TRADE REPORT SUMMARY", "Database mein koi trades mojood nahi hain.")
-        return
+    # 3. Calculate Overall Win Rate & Total Realized PnL from ALL Trades
+    cursor.execute("SELECT status, pnl FROM trades")
+    all_trades = cursor.fetchall()
+    
+    closed_count = 0
+    win_count = 0
+    total_realized_pnl = 0.0
+
+    for status, pnl in all_trades:
+        pnl_val = pnl if pnl is not None else 0.0
+        if status in ['CLOSED_TP1', 'CLOSED_TP2', 'CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED_24H_PROFIT']:
+            closed_count += 1
+            total_realized_pnl += pnl_val
+            if pnl_val > 0:
+                win_count += 1
+
+    win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
+
+    # Calculate Total ROI % based on Initial Capital
+    initial_capital = max(1.0, total_capital - total_realized_pnl)
+    total_roi = (total_realized_pnl / initial_capital) * 100
+
+    # 4. Fetch ONLY Active/Running Trades
+    cursor.execute("SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value, leverage, status FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
+    running_trades = cursor.fetchall()
+    conn.close()
 
     def fmt_p(p):
         return f"{p:.6f}".rstrip('0').rstrip('.') if p and p < 1 else f"{p:.2f}" if p else "0.00"
 
-    report_title = f"📊 QUANT TRADE MONITOR REPORT ({len(rows)} Trades)"
-    report_body = f"🏛️ DB Engine: [{db_type}]\n"
+    # Build Pushbullet Body
+    report_title = f"⚡ LIVE PORTFOLIO & RUNNING TRADES ({len(running_trades)})"
+    
+    report_body = "💰 PORTFOLIO STATS\n"
+    report_body += "========================================\n"
+    report_body += f"💵 Total Capital    : ${total_capital:.2f} USDT\n"
+    report_body += f"🟢 Available Balance : ${avail_capital:.2f} USDT\n"
+    report_body += f"🔒 Freezed Balance   : ${frozen_margin:.2f} USDT\n"
+    report_body += f"🎯 Overall Win Rate  : {win_rate:.1f}%\n"
+    report_body += f"📈 Total ROI         : {total_roi:+.2f}%\n"
     report_body += "========================================\n\n"
 
-    for r in rows:
-        t_id, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val, lev, status, pnl = r
-        pnl = pnl if pnl is not None else 0.0
-        live_p = fetch_live_price(symbol) or entry_p
+    if not running_trades:
+        report_body += "😴 Currently no running trades."
+    else:
+        report_body += "🟢 RUNNING POSITIONS\n"
+        report_body += "----------------------------------------\n"
+        for r in running_trades:
+            t_id, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val, lev, status = r
+            live_p = fetch_live_price(symbol) or entry_p
 
-        # Status formatting & icons
-        if status == 'ACTIVE':
-            status_icon = "🟢 RUNNING"
             if direction == 'LONG':
                 float_pnl = pos_val * ((live_p - entry_p) / entry_p)
             else:
                 float_pnl = pos_val * ((entry_p - live_p) / entry_p)
-            pnl_str = f"Floating: ${float_pnl:+.2f}"
-        elif 'CLOSED_TP' in status or status == 'CLOSED_24H_PROFIT':
-            status_icon = "🎯 HIT TARGET (WIN)"
-            pnl_str = f"Net PnL: ${pnl:+.2f}"
-        elif status == 'CLOSED_SL':
-            status_icon = "🛑 HIT STOPLOSS (LOSS)"
-            pnl_str = f"Net PnL: ${pnl:+.2f}"
-        else:
-            status_icon = f"🔴 {status}"
-            pnl_str = f"Net PnL: ${pnl:+.2f}"
 
-        report_body += f"🪙 PAIR: {symbol} [{direction}]\n"
-        report_body += f"📌 Current Status : {status_icon}\n"
-        report_body += f"💵 Trade Margin  : ${margin:.2f} USDT\n"
-        report_body += f"⚡ Leverage      : {lev}x (Pos: ${pos_val:.2f})\n"
-        report_body += f"📥 Entry Point   : ${fmt_p(entry_p)}\n"
-        report_body += f"📊 Live Price    : ${fmt_p(live_p)}\n"
-        report_body += f"🛑 SL Price      : ${fmt_p(sl_p)}\n"
-        report_body += f"🎯 TP1 Price     : ${fmt_p(tp1_p)}\n"
-        report_body += f"🚀 TP2 Price     : ${fmt_p(tp2_p)}\n"
-        report_body += f"💰 PnL Status    : {pnl_str}\n"
-        report_body += "----------------------------------------\n"
+            float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
+
+            report_body += f"🪙 {symbol} [{direction}]\n"
+            report_body += f"💵 Trade Margin  : ${margin:.2f} USDT\n"
+            report_body += f"⚡ Leverage      : {lev}x (Pos: ${pos_val:.2f})\n"
+            report_body += f"📥 Entry Point   : ${fmt_p(entry_p)}\n"
+            report_body += f"📊 Live Price    : ${fmt_p(live_p)}\n"
+            report_body += f"🛑 SL Price      : ${fmt_p(sl_p)}\n"
+            report_body += f"🎯 TP1 Price     : ${fmt_p(tp1_p)}\n"
+            report_body += f"🚀 TP2 Price     : ${fmt_p(tp2_p)}\n"
+            report_body += f"📌 Current Status : 🟢 RUNNING\n"
+            report_body += f"💰 Floating PnL  : ${float_pnl:+.2f} ({float_pnl_pct:+.2f}%)\n"
+            report_body += "----------------------------------------\n"
 
     send_pushbullet_notification(report_title, report_body)
 
 if __name__ == "__main__":
     generate_and_send_report()
+    
