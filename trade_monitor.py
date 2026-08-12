@@ -175,11 +175,11 @@ def fetch_full_trade_klines(symbol, start_time_ms):
     return df
 
 # =========================================================
-# 🔄 PROCESS ACTIVE TRADES (SEQUENTIAL CANDLE EVALUATION)
+# 🔄 PROCESS ACTIVE TRADES (QUIET BACKGROUND CANDLE EVALUATION)
 # =========================================================
 def process_active_trades():
     print("\n" + "="*60)
-    print("🔍 ACTIVE TRADES CANDLE CHECKING & MONITORING INITIALIZED")
+    print("🔍 CHECKING ACTIVE TRADES IN BACKGROUND")
     print("="*60)
 
     conn, db_type = get_db_connection()
@@ -202,9 +202,7 @@ def process_active_trades():
 
     for trade in active_trades:
         t_id, t_time_str, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val = trade
-        print(f"\n📌 Processing Trade ID #{t_id} | {symbol} [{direction}]")
-        print(f"   - Entry: ${entry_p:.6f} | SL: ${sl_p:.6f} | TP1: ${tp1_p:.6f} | TP2: ${tp2_p:.6f}")
-        print(f"   - Margin: ${margin:.2f} USDT | Pos Value: ${pos_val:.2f} USDT")
+        print(f"\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]")
 
         try:
             dt_obj = datetime.strptime(str(t_time_str), "%Y-%m-%d %H:%M:%S")
@@ -213,64 +211,50 @@ def process_active_trades():
             print(f"❌ Timestamp Parsing Error for Trade #{t_id}: {e}")
             continue
 
-        print(f"   ⏳ Fetching 1m candles starting from: {t_time_str}...")
         df = fetch_full_trade_klines(symbol, start_ms)
         if df is None or df.empty:
             print(f"⚠️ No kline data retrieved for {symbol}. Skipping evaluation.")
             continue
 
-        print(f"   📊 Downloaded {len(df)} candles. Evaluating sequentially candle-by-candle...")
+        print(f"   📊 Quietly processing {len(df)} candles from {t_time_str}...")
 
         status = 'ACTIVE'
         gross_pnl = 0.0
 
-        # Sequential Evaluation Candle-by-Candle
+        # Silent Candle-by-Candle Evaluation
         for idx, row in df.iterrows():
             c_time_ms = row['time']
-            c_dt = datetime.fromtimestamp(c_time_ms / 1000.0).strftime('%Y-%m-%d %H:%M:%S')
             c_open, c_high, c_low, c_close = row['open'], row['high'], row['low'], row['close']
             time_elapsed_seconds = (c_time_ms - start_ms) / 1000.0
 
-            print(f"   🕯️ Candle #{idx+1} [{c_dt}] -> O:{c_open} | H:{c_high} | L:{c_low} | C:{c_close}")
-
             if direction == "LONG":
-                # Check intra-candle movement based on candle direction
                 if c_close >= c_open:
-                    # Bullish Candle: Low comes first, then High
                     if c_low <= sl_p:
                         status = 'CLOSED_SL'
                         gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
-                        print(f"      🚨 SL HIT on Bullish Candle Low (${c_low} <= ${sl_p})")
                         break
                     elif c_high >= tp2_p:
                         status = 'CLOSED_TP2'
                         gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
-                        print(f"      🎯 TP2 HIT on Bullish Candle High (${c_high} >= ${tp2_p})")
                         break
                     elif c_high >= tp1_p:
                         status = 'CLOSED_TP1'
                         gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
-                        print(f"      🎯 TP1 HIT on Bullish Candle High (${c_high} >= ${tp1_p})")
                         break
                 else:
-                    # Bearish Candle: High comes first, then Low
                     if c_high >= tp2_p:
                         status = 'CLOSED_TP2'
                         gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
-                        print(f"      🎯 TP2 HIT on Bearish Candle High (${c_high} >= ${tp2_p})")
                         break
                     elif c_high >= tp1_p:
                         status = 'CLOSED_TP1'
                         gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
-                        print(f"      🎯 TP1 HIT on Bearish Candle High (${c_high} >= ${tp1_p})")
                         break
                     elif c_low <= sl_p:
                         status = 'CLOSED_SL'
                         gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
-                        print(f"      🚨 SL HIT on Bearish Candle Low (${c_low} <= ${sl_p})")
                         break
 
-                # 24 Hours Exit Rule
                 if time_elapsed_seconds >= 86400:
                     candle_gross_pnl = pos_val * ((c_close - entry_p) / entry_p)
                     entry_fee = pos_val * BINANCE_FEE_RATE
@@ -282,46 +266,36 @@ def process_active_trades():
                     if net_pct > 0.5:
                         status = 'CLOSED_24H_PROFIT'
                         gross_pnl = candle_gross_pnl
-                        print(f"      ⏱️ 24H EXIT RULE TRIGGERED! Profit Net %: {net_pct:.2f}%")
                         break
 
             else:  # SHORT Direction
                 if c_close <= c_open:
-                    # Bearish Candle: High comes first, then Low
                     if c_high >= sl_p:
                         status = 'CLOSED_SL'
                         gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
-                        print(f"      🚨 SL HIT on Bearish Candle High (${c_high} >= ${sl_p})")
                         break
                     elif c_low <= tp2_p:
                         status = 'CLOSED_TP2'
                         gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
-                        print(f"      🎯 TP2 HIT on Bearish Candle Low (${c_low} <= ${tp2_p})")
                         break
                     elif c_low <= tp1_p:
                         status = 'CLOSED_TP1'
                         gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
-                        print(f"      🎯 TP1 HIT on Bearish Candle Low (${c_low} <= ${tp1_p})")
                         break
                 else:
-                    # Bullish Candle: Low comes first, then High
                     if c_low <= tp2_p:
                         status = 'CLOSED_TP2'
                         gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
-                        print(f"      🎯 TP2 HIT on Bullish Candle Low (${c_low} <= ${tp2_p})")
                         break
                     elif c_low <= tp1_p:
                         status = 'CLOSED_TP1'
                         gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
-                        print(f"      🎯 TP1 HIT on Bullish Candle Low (${c_low} <= ${tp1_p})")
                         break
                     elif c_high >= sl_p:
                         status = 'CLOSED_SL'
                         gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
-                        print(f"      🚨 SL HIT on Bullish Candle High (${c_high} >= ${sl_p})")
                         break
 
-                # 24 Hours Exit Rule
                 if time_elapsed_seconds >= 86400:
                     candle_gross_pnl = pos_val * ((entry_p - c_close) / entry_p)
                     entry_fee = pos_val * BINANCE_FEE_RATE
@@ -333,10 +307,9 @@ def process_active_trades():
                     if net_pct > 0.5:
                         status = 'CLOSED_24H_PROFIT'
                         gross_pnl = candle_gross_pnl
-                        print(f"      ⏱️ 24H EXIT RULE TRIGGERED! Profit Net %: {net_pct:.2f}%")
                         break
 
-        # If trade closed in sequence, update DB & portfolio & send Full Pushbullet Alert
+        # Update DB & Portfolio and send Full Pushbullet Notification
         if status != 'ACTIVE':
             entry_fee = pos_val * BINANCE_FEE_RATE
             exit_value = max(0, pos_val + gross_pnl)
@@ -352,7 +325,7 @@ def process_active_trades():
                            (total_cap, avail_cap, frozen_margin))
             conn.commit()
 
-            print(f"   ✅ DB UPDATED: Trade #{t_id} status changed to {status}. Net PnL: ${net_pnl:+.2f}")
+            print(f"   🔔 EVENT TRIGGERED: Trade #{t_id} [{symbol}] CLOSED via {status} | Net PnL: ${net_pnl:+.2f}")
 
             # Fetch Updated Portfolio Statistics
             cursor.execute("SELECT status, pnl FROM trades")
@@ -432,16 +405,16 @@ def process_active_trades():
                     event_body += f"💰 Floating PnL  : ${float_pnl:+.2f} ({float_pnl_pct:+.2f}%)\n"
                     event_body += "----------------------------------------\n"
 
-            print(f"   🚀 Sending Pushbullet event alert for Trade #{t_id} with full portfolio & active trades...")
+            print(f"   🚀 Pushbullet alert sent with full portfolio & running positions context.")
             send_pushbullet_notification(event_title, event_body)
         else:
-            print(f"   🟢 Trade #{t_id} [{symbol}] remains ACTIVE after evaluation.")
+            print(f"   🟢 Trade #{t_id} [{symbol}] remains ACTIVE.")
 
     conn.close()
     print("="*60 + "\n")
 
 # =========================================================
-# 📋 GENERATE & PRINT DETAILED CONSOLE REPORT
+# 📋 GENERATE & PRINT CLEAN CONSOLE REPORT
 # =========================================================
 def generate_and_send_report():
     process_active_trades()
@@ -498,7 +471,6 @@ def generate_and_send_report():
         for r in running_trades:
             t_id, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val, lev, status = r
             
-            # Direct Live Fetch via Binance Vision Ticker
             fetched_live = fetch_live_price(symbol)
             live_p = fetched_live if fetched_live is not None else entry_p
 
@@ -521,7 +493,6 @@ def generate_and_send_report():
             report_body += f"💰 Floating PnL  : ${float_pnl:+.2f} ({float_pnl_pct:+.2f}%)\n"
             report_body += "----------------------------------------\n"
 
-    # Full details printed directly to Console
     print("\n" + "="*60)
     print(report_title)
     print("="*60)
