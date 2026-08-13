@@ -572,7 +572,7 @@ def run_legendary_engine():
     else:
         print('   (Koi high-probability safe trade spot nahi hui. Capital preserve karein!)\n')
 
-    min_score_required = 75 if btc_regime == 'CHOPPY' else 65
+    min_score_required = 75 if btc_regime == 'CHOPPY' else 20
     pushbullet_signals = [r for r in high_conviction if r['score'] >= min_score_required]
 
     # ONLY SEND PUSHBULLET NOTIFICATION WHEN VALID SIGNALS ARE GENERATED
