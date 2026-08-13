@@ -572,14 +572,32 @@ def run_legendary_engine():
     else:
         print('   (Koi high-probability safe trade spot nahi hui. Capital preserve karein!)\n')
 
-    min_score_required = 75 if btc_regime == 'CHOPPY' else 20
-    pushbullet_signals = [r for r in high_conviction if r['score'] >= min_score_required]
+    # Fix: LONG trades ke liye High Score, SHORT trades ke liye Low Score check karein
+    if btc_regime == 'CHOPPY':
+        min_long_score = 75
+        max_short_score = 25
+    else:
+        # Default / Normal Market Limits
+        min_long_score = 65  # Ya Testing ke liye 20 rakh sakte hain
+        max_short_score = 35 # Ya Testing ke liye 35/40 rakh sakte hain
+
+    pushbullet_signals = [
+        r for r in high_conviction 
+        if r['score'] >= min_long_score or r['score'] <= max_short_score
+    ]
 
     # ONLY SEND PUSHBULLET NOTIFICATION WHEN VALID SIGNALS ARE GENERATED
     if pushbullet_signals:
         alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
         alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
         alert_body += '========================================\n\n'
+
+
+ 
+  
+ 
+  
+    #'========================================\n\n'
 
         for item in pushbullet_signals:
             alert_body += f"🪙 PAIR: {item['symbol']}\n"
