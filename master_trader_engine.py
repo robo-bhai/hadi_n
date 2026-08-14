@@ -385,7 +385,7 @@ def check_micro_momentum(df, direction):
 # =========================================================
 def process_trade_logic(symbol_input, base_risk_pct=1.5):
     """
-    Main Trader Engine execution logic. Operates identically for Scanner & CLI.
+    Main Trader Engine execution logic with Dynamic Key-Level RRR (Min 1:1.5) & Strict 1% Total Risk Guard.
     """
     port = load_portfolio()
     active_count = get_active_trades_count()
@@ -560,50 +560,82 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         send_pushbullet_notification(f"💤 [NO TRADE] {symbol_input} (Score: {score})", no_trade_body)
         return False
 
-    # Dynamic Margin Allocation
-    avail_cap = port['available']
-    
-    if score >= 85 or score <= 15:
-        margin_pct = 0.12  # 12% Max Margin
-    elif score >= 75 or score <= 25:
-        margin_pct = 0.10  # 10% Margin
-    else:
-        margin_pct = 0.08  # 8% Base Margin
-        
-    required_margin = avail_cap * margin_pct
+    # =========================================================
+    # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
+    # =========================================================
+    total_account_capital = port['total']
+    max_allowed_dollar_risk = total_account_capital * 0.01  # Exact 1% Total Equity Risk ($1.00 USDT)
     atr_sl_buffer = atr_val * 1.5
 
     if direction == "LONG":
         sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
-        sl_dist_pct = ((live_price - sl_price) / live_price) * 100
-        tp1_price = live_price * (1 + (sl_dist_pct * 2.0 / 100.0))
-        tp2_price = live_price * (1 + (sl_dist_pct * 3.5 / 100.0))
-        breakeven_lock_level = tp1_price
-    else:
-        sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
-        sl_dist_pct = ((sl_price - live_price) / live_price) * 100
-        tp1_price = live_price * (1 - (sl_dist_pct * 2.0 / 100.0))
-        tp2_price = live_price * (1 - (sl_dist_pct * 3.5 / 100.0))
+        risk_dist = live_price - sl_price
+        
+        # Level Resistance-Based Target
+        tp1_price = resistance_4h
+        reward_dist = tp1_price - live_price
+        
+        # Calculate Real Market RRR
+        calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
+        
+        # Target 2: Extended Target
+        tp2_price = live_price + (risk_dist * max(2.5, calculated_rrr * 1.3))
         breakeven_lock_level = tp1_price
 
-    pos_value = required_margin * leverage
+    elif direction == "SHORT":
+        sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
+        risk_dist = sl_price - live_price
+        
+        # Level Support-Based Target
+        tp1_price = support_4h
+        reward_dist = live_price - tp1_price
+        
+        # Calculate Real Market RRR
+        calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
+        
+        # Target 2: Extended Target
+        tp2_price = live_price - (risk_dist * max(2.5, calculated_rrr * 1.3))
+        breakeven_lock_level = tp1_price
+
+    # 🛑 STRICT FILTER 1: Minimum 1:1.5 Risk-to-Reward Ratio Guard
+    MIN_REQUIRED_RRR = 1.5
+    if calculated_rrr < MIN_REQUIRED_RRR:
+        msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [LOW RRR REJECTED] {symbol_input}", msg)
+        return False
+
+    # 🛑 STRICT FILTER 2: Total Capital 1% Risk Based Position Sizing
+    sl_dist_pct = (risk_dist / live_price) * 100
+    pos_value = max_allowed_dollar_risk / (sl_dist_pct / 100.0)
+    required_margin = pos_value / leverage
     coin_qty = pos_value / live_price
-    dollar_risk = required_margin * (sl_dist_pct / 100.0) * leverage
+    dollar_risk = max_allowed_dollar_risk  # Always Locked to 1% Capital ($1.00 USDT)
+
+    # Capital Check
+    if required_margin > port['available']:
+        msg = f"❌ TRADE REJECTED: Required Margin (${required_margin:.2f}) exceeds Available Capital (${port['available']:.2f})."
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [INSUFFICIENT MARGIN] {symbol_input}", msg)
+        return False
+
+    margin_pct = required_margin / port['available']
 
     print("\n" + "╔" + "═" * 68 + "╗")
     print(f"║ 🎯 INSTITUTIONAL EXECUTION CARD v4.5 | PAIR: {symbol_input:<10} [{direction}]║")
     print("╠" + "═" * 68 + "╣")
     print(f"║ 📍 ENTRY POINT         : ${live_price:<15.4f}                        ║")
-    print(f"║ 🛑 STOP LOSS (SL)      : ${sl_price:<15.4f} (-{sl_dist_pct:.2f}% Risk 1:1.5)     ║")
+    print(f"║ 🛑 STOP LOSS (SL)      : ${sl_price:<15.4f} (-{sl_dist_pct:.2f}%)               ║")
+    print(f"║ 📊 CALCULATED RRR      : 1:{calculated_rrr:<13.2f} (Min Required 1:1.5)║")
     print(f"║ 🔄 BREAKEVEN SL TRIGGER: ${breakeven_lock_level:<15.4f} (Locked at TP1 Hit)  ║")
-    print(f"║ 🎯 TARGET 1 (TP1)      : ${tp1_price:<15.4f} (Position R:R 1:2.0)     ║")
-    print(f"║ 🚀 TARGET 2 (TP2)      : ${tp2_price:<15.4f} (Position R:R 1:3.5)     ║")
+    print(f"║ 🎯 TARGET 1 (TP1)      : ${tp1_price:<15.4f} (Key Level Target)     ║")
+    print(f"║ 🚀 TARGET 2 (TP2)      : ${tp2_price:<15.4f} (Extended Target)      ║")
     print("╠" + "═" * 68 + "╣")
     print(f"║ 💵 POSITION VALUE      : ${pos_value:<15.2f}                        ║")
     print(f"║ 🪙 COIN QUANTITY       : {coin_qty:<16.4f}                        ║")
     print(f"║ ⚡ LEVERAGE            : {leverage:<2}x (Dynamic Volatility Mode)         ║")
     print(f"║ 🔒 MARGIN FROZEN       : ${required_margin:<15.2f} (-{margin_pct*100:.0f}% Available Cap)  ║")
-    print(f"║ 🛡️ RISK AMOUNT         : ${dollar_risk:<15.2f}                            ║")
+    print(f"║ 🛡️ MAX RISK AMOUNT     : ${dollar_risk:<15.2f} (Strict 1% Total Equity)║")
     print("╚" + "═" * 68 + "╝")
 
     if active_count >= 3:
@@ -615,21 +647,21 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     # PUSHBULLET NOTIFICATION FOR EXECUTED TRADE
     trade_title = f"🚀 [TRADE EXECUTED] {symbol_input} ({direction})"
     trade_body = f"🪙 Pair: {symbol_input} | Side: {direction}\n"
-    trade_body += f"📊 Quant Score: {score}/100 | BTC Regime: {btc_regime}\n"
+    trade_body += f"📊 Quant Score: {score}/100 | Max Available RRR: 1:{calculated_rrr:.2f}\n"
     trade_body += "----------------------------------------\n"
     trade_body += f"📍 Entry Price: ${live_price:.4f}\n"
     trade_body += f"🛑 Stop Loss: ${sl_price:.4f} (-{sl_dist_pct:.2f}%)\n"
-    trade_body += f"🎯 Target 1 (TP1): ${tp1_price:.4f} (R:R 1:2.0)\n"
-    trade_body += f"🚀 Target 2 (TP2): ${tp2_price:.4f} (R:R 1:3.5)\n"
+    trade_body += f"🎯 Target 1 (TP1): ${tp1_price:.4f} (Key Level Target)\n"
+    trade_body += f"🚀 Target 2 (TP2): ${tp2_price:.4f} (Extended Target)\n"
     trade_body += f"🔄 Breakeven SL: ${breakeven_lock_level:.4f}\n"
     trade_body += "----------------------------------------\n"
     trade_body += f"💼 Total Portfolio: ${port['total']:.2f} USDT\n"
-    trade_body += f"💵 Available Cap Before: ${avail_cap:.2f} USDT\n"
-    trade_body += f"🔒 Margin Frozen: ${required_margin:.2f} USDT ({margin_pct*100:.0f}% Cap)\n"
+    trade_body += f"💵 Available Cap Before: ${port['available']:.2f} USDT\n"
+    trade_body += f"🔒 Margin Frozen: ${required_margin:.2f} USDT\n"
     trade_body += f"⚡ Leverage: {leverage}x | Volatility: {volatility_state}\n"
     trade_body += f"📈 Total Position Value: ${pos_value:.2f} USDT\n"
     trade_body += f"🪙 Coin Quantity: {coin_qty:.4f}\n"
-    trade_body += f"🛡️ Max Risk Amount: ${dollar_risk:.2f} USDT\n"
+    trade_body += f"🛡️ Max Risk Amount: ${dollar_risk:.2f} USDT (Strict 1% Capital)\n"
     trade_body += f"📊 Active Trades Count: {active_count + 1}/3\n"
 
     send_pushbullet_notification(trade_title, trade_body)
@@ -638,15 +670,10 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
         'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
         'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
-        'leverage': leverage, 'available_cap': avail_cap, 'frozen_cap': port['frozen']
+        'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
 
-def run_engine_for_coin(symbol_input, base_risk_pct=1.5):
-    """
-    Automated Bridge Function called by Scanner script seamlessly.
-    """
-    return process_trade_logic(symbol_input, base_risk_pct)
 
 def master_trade_analyzer():
     """
