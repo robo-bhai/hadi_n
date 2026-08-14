@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Institutional Crypto Analyst Dashboard</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0b0f19;
+            color: #cbd5e1;
+            font-family: 'Segoe UI', Roboto, sans-serif;
+            overflow-x: hidden;
+        }
+        .dashboard-header {
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            border-bottom: 1px solid #334155;
+            padding: 15px 0;
+        }
+        .card-custom {
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .card-custom:hover {
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        }
+        .badge-long { background-color: #16a34a; color: #fff; font-weight: bold; }
+        .badge-short { background-color: #dc2626; color: #fff; font-weight: bold; }
+        .metric-title { font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+        .metric-value { font-size: 1rem; font-weight: 700; color: #f8fafc; word-break: break-all; }
+        .pnl-positive { color: #22c55e !important; }
+        .pnl-negative { color: #ef4444 !important; }
+        .chart-img { border-radius: 8px; border: 1px solid #334155; width: 100%; height: auto; object-fit: contain; }
+        .tech-box { background-color: #0f172a; border-radius: 8px; padding: 10px; border: 1px solid #1e293b; }
+        
+        /* Mobile Specific Overrides */
+        @media (max-width: 576px) {
+            .dashboard-header h3 { font-size: 1.25rem; }
+            .dashboard-header small { font-size: 0.75rem; }
+            .metric-title { font-size: 0.65rem; }
+            .metric-value { font-size: 0.9rem; }
+            .trade-title { font-size: 1.1rem !important; }
+            .trade-pnl { font-size: 1.05rem !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Section -->
+    <div class="dashboard-header mb-3 mb-md-4">
+        <div class="container-fluid px-3 px-md-4">
+            <div class="row align-items-center text-center text-md-start">
+                <div class="col-12 col-md-6 mb-2 mb-md-0">
+                    <h3 class="fw-bold text-white m-0"><i class="fa-solid fa-chart-line me-2 text-primary"></i>INSTITUTIONAL QUANT</h3>
+                    <small class="text-muted d-block mt-1">Live MySQL Stream & Technical Analysis Engine</small>
+                </div>
+                <div class="col-12 col-md-6 text-md-end">
+                    <button onclick="loadDashboard()" class="btn btn-outline-primary btn-sm px-3"><i class="fa-solid fa-rotate me-1"></i> Refresh</button>
+                    <span id="last-updated" class="d-block d-sm-inline mt-2 mt-sm-0 ms-sm-2 text-muted small">Updated: Just now</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container-fluid px-3 px-md-4">
+        <!-- Portfolio Overview Cards -->
+        <div class="row g-2 g-md-3 mb-4">
+            <div class="col-12 col-sm-4">
+                <div class="card-custom p-3">
+                    <div class="metric-title"><i class="fa-solid fa-wallet me-1"></i> Total Portfolio Equity</div>
+                    <div class="metric-value text-info mt-1" id="port-total">$0.00 USDT</div>
+                </div>
+            </div>
+            <div class="col-6 col-sm-4">
+                <div class="card-custom p-3">
+                    <div class="metric-title"><i class="fa-solid fa-vault me-1"></i> Available Margin</div>
+                    <div class="metric-value text-success mt-1" id="port-avail">$0.00 USDT</div>
+                </div>
+            </div>
+            <div class="col-6 col-sm-4">
+                <div class="card-custom p-3">
+                    <div class="metric-title"><i class="fa-solid fa-lock me-1"></i> Frozen Margin</div>
+                    <div class="metric-value text-warning mt-1" id="port-frozen">$0.00 USDT</div>
+                </div>
+            </div>
+        </div>
+
+        <h5 class="fw-bold text-white mb-3 fs-6 fs-md-5"><i class="fa-solid fa-eye me-2 text-warning"></i>Active Position Visualizer</h5>
+
+        <!-- Active Trades Container -->
+        <div id="trades-container" class="row g-3 g-md-4 mb-5">
+            <div class="text-center py-5 text-muted">
+                <div class="spinner-border text-primary" role="status"></div>
+                <p class="mt-2 small">Fetching Active Trades & Rendering Technical Charts...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Engine -->
+    <script>
+        async function loadDashboard() {
+            try {
+                const response = await fetch('/api/active_trades');
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    // Update Portfolio
+                    if (data.portfolio) {
+                        document.getElementById('port-total').innerText = `$${parseFloat(data.portfolio.total_capital).toFixed(2)} USDT`;
+                        document.getElementById('port-avail').innerText = `$${parseFloat(data.portfolio.available_capital).toFixed(2)} USDT`;
+                        document.getElementById('port-frozen').innerText = `$${parseFloat(data.portfolio.frozen_margin).toFixed(2)} USDT`;
+                    }
+
+                    const container = document.getElementById('trades-container');
+                    container.innerHTML = '';
+
+                    if (data.trades.length === 0) {
+                        container.innerHTML = `
+                            <div class="col-12 text-center py-5">
+                                <i class="fa-solid fa-folder-open fs-1 text-muted mb-3 d-block"></i>
+                                <h6 class="text-muted">No Active Trades Found in MySQL DB</h6>
+                            </div>`;
+                        return;
+                    }
+
+                    // Loop through active trades
+                    data.trades.forEach(item => {
+                        const t = item.trade_info;
+                        const pnlClass = item.pnl_usdt >= 0 ? 'pnl-positive' : 'pnl-negative';
+                        const badgeClass = t.direction === 'LONG' ? 'badge-long' : 'badge-short';
+
+                        const cardHtml = `
+                        <div class="col-12 col-xl-6">
+                            <div class="card-custom p-3">
+                                <!-- Card Header -->
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <div>
+                                        <span class="fs-5 fw-bold text-white me-2 trade-title">${t.symbol}</span>
+                                        <span class="badge ${badgeClass}">${t.direction} ${t.leverage}x</span>
+                                    </div>
+                                    <div class="text-end">
+                                        <span class="fs-5 fw-bold ${pnlClass} trade-pnl">${item.pnl_usdt >= 0 ? '+' : ''}${item.pnl_usdt} USDT</span>
+                                        <div class="small text-muted" style="font-size: 0.75rem;">(${item.pnl_pct}%) PnL</div>
+                                    </div>
+                                </div>
+
+                                <!-- Chart Download / Embed -->
+                                <div class="mb-3 text-center">
+                                    <img src="data:image/png;base64,${item.chart}" class="chart-img" alt="Candle Chart">
+                                </div>
+
+                                <!-- Expert Technical Data Metrics (2x2 Grid on Mobile) -->
+                                <div class="tech-box">
+                                    <div class="row g-2 text-center">
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">Live Price</div>
+                                            <div class="metric-value">${item.live_price}</div>
+                                        </div>
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">Entry Price</div>
+                                            <div class="metric-value">${t.entry_price}</div>
+                                        </div>
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">Stop Loss</div>
+                                            <div class="metric-value text-danger">${t.sl_price}</div>
+                                        </div>
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">Target 1</div>
+                                            <div class="metric-value text-success">${t.tp1_price}</div>
+                                        </div>
+                                    </div>
+                                    <hr class="my-2 border-secondary">
+                                    <div class="row g-2 text-center">
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">4H RSI</div>
+                                            <div class="metric-value text-warning">${item.rsi}</div>
+                                        </div>
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">4H ATR</div>
+                                            <div class="metric-value text-info">${item.atr}</div>
+                                        </div>
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">Position Size</div>
+                                            <div class="metric-value">$${parseFloat(t.pos_value).toFixed(2)}</div>
+                                        </div>
+                                        <div class="col-6 col-sm-3">
+                                            <div class="metric-title">Margin Frozen</div>
+                                            <div class="metric-value">$${parseFloat(t.margin_frozen).toFixed(2)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>`;
+                        container.innerHTML += cardHtml;
+                    });
+
+                    document.getElementById('last-updated').innerText = `Updated: ${new Date().toLocaleTimeString()}`;
+                }
+            } catch (err) {
+                console.error("Dashboard Fetch Error:", err);
+            }
+        }
+
+        // Auto load on start & refresh every 30 seconds
+        loadDashboard();
+        setInterval(loadDashboard, 30000);
+    </script>
+</body>
+</html>
