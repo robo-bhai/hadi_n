@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import requests
 import ssl
+#from master_trader_engine import run_engine_for_coin
+from master_trader_engine import process_trade_logic
 
 # Conditional MySQL Connector (Remote / GitHub Secrets)
 try:
@@ -656,6 +658,9 @@ def run_legendary_engine():
 # =========================================================
 # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
 # =========================================================
+    # =========================================================
+    # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
+    # =========================================================
     if TRADER_ENGINE_AVAILABLE and pushbullet_signals:
         print(f"\n🤖 [AUTOMATION BRIDGE] Found {len(pushbullet_signals)} high conviction signal(s). Executing...")
         
@@ -665,8 +670,8 @@ def run_legendary_engine():
             score = trade['score']
             print(f"🚀 Triggering Trader Engine for [{symbol}] (Score: {score})...")
             
-            # Run engine for the specific coin
-            result = run_engine_for_coin(symbol)
+            # Execute trade using master trader engine logic
+            result = process_trade_logic(symbol)
             executed_trades.append({"symbol": symbol, "score": score, "result": result})
             
         return {
@@ -688,6 +693,7 @@ def run_legendary_engine():
             "status": "disabled",
             "reason": "Trader Engine module not imported."
         }
+
 
 if __name__ == '__main__':
     run_legendary_engine()
