@@ -4,8 +4,6 @@ import numpy as np
 import pandas as pd
 import requests
 import ssl
-#from master_trader_engine import run_engine_for_coin
-from master_trader_engine import process_trade_logic
 
 # Conditional MySQL Connector (Remote / GitHub Secrets)
 try:
@@ -16,7 +14,7 @@ except ImportError:
 
 # Import Trader Engine for Seamless Automated Integration
 try:
-    from master_trader_engine import run_engine_for_coin
+    from master_trader_engine import process_trade_logic
     TRADER_ENGINE_AVAILABLE = True
 except ImportError:
     TRADER_ENGINE_AVAILABLE = False
