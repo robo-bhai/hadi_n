@@ -650,12 +650,45 @@ def run_legendary_engine():
     # =========================================================
     # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
     # =========================================================
+# =========================================================
+# 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
+# =========================================================
+# =========================================================
+# 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
+# =========================================================
     if TRADER_ENGINE_AVAILABLE and pushbullet_signals:
-        top_trade = pushbullet_signals[0]
-        print(f"🤖 [AUTOMATION BRIDGE] Sending Top Scored Coin [{top_trade['symbol']}] (Score: {top_trade['score']}) to Trader Engine...")
-        run_engine_for_coin(top_trade['symbol'])
+        print(f"\n🤖 [AUTOMATION BRIDGE] Found {len(pushbullet_signals)} high conviction signal(s). Executing...")
+        
+        executed_trades = []
+        for trade in pushbullet_signals:
+            symbol = trade['symbol']
+            score = trade['score']
+            print(f"🚀 Triggering Trader Engine for [{symbol}] (Score: {score})...")
+            
+            # Run engine for the specific coin
+            result = run_engine_for_coin(symbol)
+            executed_trades.append({"symbol": symbol, "score": score, "result": result})
+            
+        return {
+            "status": "success",
+            "executed_count": len(executed_trades),
+            "trades": executed_trades
+        }
+
     elif TRADER_ENGINE_AVAILABLE:
-        print("🤖 [AUTOMATION BRIDGE] No valid trade passed threshold to execute in Trader Engine.")
+        print("\n🤖 [AUTOMATION BRIDGE] No valid trade passed threshold to execute in Trader Engine.")
+        return {
+            "status": "skipped",
+            "reason": "No high-conviction signals passed threshold."
+        }
+
+    else:
+        print("\n⚠️ [AUTOMATION BRIDGE] Trader Engine unavailable or disabled.")
+        return {
+            "status": "disabled",
+            "reason": "Trader Engine module not imported."
+        }
 
 if __name__ == '__main__':
     run_legendary_engine()
+

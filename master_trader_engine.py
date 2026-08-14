@@ -4,6 +4,7 @@ import math
 import sqlite3
 import requests
 import pandas as pd
+import ssl
 
 # MySQL Connector for Remote DB / GitHub Secrets
 try:
@@ -13,25 +14,42 @@ except ImportError:
     MYSQL_AVAILABLE = False
 
 # =========================================================
-# ⚙️ API ENDPOINTS
-# =========================================================
-# =========================================================
-# ⚙️ API ENDPOINTS (Clean Data API Endpoints)
-# =========================================================
-# =========================================================
 # ⚙️ API ENDPOINTS (Clean Data API Endpoints)
 # =========================================================
 BINANCE_SPOT_URL = 'https://data-api.binance.vision/api/v3/klines'
 BINANCE_BOOK_TICKER_URL = 'https://data-api.binance.vision/api/v3/ticker/bookTicker'
-BINANCE_FUTURES_DEPTH_URL = 'https://data-api.binance.vision/api/v3/depth'  # Updated Variable Name
+BINANCE_FUTURES_DEPTH_URL = 'https://data-api.binance.vision/api/v3/depth'
 
 BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
 BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
+
+# =========================================================
+# 📲 PUSHBULLET NOTIFICATION ENGINE
+# =========================================================
+def send_pushbullet_notification(title, body):
+    """
+    Sends Pushbullet notification for trade execution, skipped setups, or rejections.
+    """
+    api_token = os.environ.get('PUSHBULLET_TOKEN')
+    if not api_token:
+        print('⚠️ PUSHBULLET_TOKEN is not set in environment variables.')
+        return
+
+    url = 'https://api.pushbullet.com/v2/pushes'
+    headers = {'Access-Token': api_token, 'Content-Type': 'application/json'}
+    payload = {'type': 'note', 'title': title, 'body': body}
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        if res.status_code == 200:
+            print('🚀 Pushbullet notification sent successfully!')
+        else:
+            print(f'❌ Failed to send Pushbullet notification: Status {res.status_code} - {res.text}')
+    except Exception as e:
+        print(f'❌ Pushbullet API Request Error: {e}')
+
 # =========================================================
 # 🔌 DATABASE CONNECTION ENGINE (MYSQL + SQLITE FALLBACK)
 # =========================================================
-import ssl # Make sure 'import ssl' is at top of file
-
 def get_db_connection():
     """
     Connects to MySQL if GitHub Secrets / Env Variables exist with SSL Support.
@@ -380,16 +398,22 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("=" * 70)
 
     if port['available'] < 5.0:
-        print("❌ Low Available Capital! Trades close hone ka wait karein.")
+        msg = f"❌ Low Available Capital (${port['available']:.2f} USDT). Cannot place trade."
+        print(msg)
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
         return False
 
     if is_coin_trade_active(symbol_input):
-        print(f"\n❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!\n")
+        msg = f"❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
         return False
 
     corr_risk, corr_msg = check_correlation_exposure(symbol_input)
     if corr_risk:
-        print(f"\n⚠️ CORRELATION BLOCKED: {corr_msg}\n")
+        msg = f"⚠️ CORRELATION BLOCKED: {corr_msg}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
         return False
 
     print(f"\n⏳ Fetching Live Market Data, Orderbook Depth & OI for [{symbol_input}]...")
@@ -401,7 +425,9 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     df_5m = fetch_klines(symbol_input, interval="5m", limit=60)
 
     if df_1d is None or df_4h is None or df_15m is None or df_5m is None:
-        print(f"❌ Error: Invalid symbol or Binance API error for {symbol_input}")
+        msg = f"❌ Error: Invalid symbol or Binance API fetch error for {symbol_input}"
+        print(msg)
+        send_pushbullet_notification(f"⚠️ [API ERROR] {symbol_input}", msg)
         return False
 
     df_1d['EMA_20'] = df_1d['close'].ewm(span=20, adjust=False).mean()
@@ -518,6 +544,20 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     if not trade_possible:
         print(f"\n🚫 TRADE STATUS: {status_msg}\n")
+        
+        # PUSHBULLET NOTIFICATION FOR NO TRADE
+        no_trade_body = f"🪙 Pair: {symbol_input}\n"
+        no_trade_body += f"📊 Quant Score: {score}/100\n"
+        no_trade_body += f"💰 Current Price: ${live_price:.4f}\n"
+        no_trade_body += f"🌐 BTC Regime: {btc_regime}\n"
+        no_trade_body += f"📈 RSI (4H): {rsi_4h:.1f} | ADX: {adx_4h:.1f}\n"
+        no_trade_body += f"🛑 Status / Reason: {status_msg}\n\n"
+        if reasons:
+            no_trade_body += "💡 Confluences Evaluated:\n"
+            for r in reasons:
+                no_trade_body += f"   • {r}\n"
+                
+        send_pushbullet_notification(f"💤 [NO TRADE] {symbol_input} (Score: {score})", no_trade_body)
         return False
 
     # Dynamic Margin Allocation
@@ -567,8 +607,32 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("╚" + "═" * 68 + "╝")
 
     if active_count >= 3:
-        print("\n💡 TIP: Maximum 3 Active Trades limit reached (3/3 active). Trade displayed but NOT saved to DB.\n")
+        msg = f"💡 TIP: Maximum 3 Active Trades limit reached ({active_count}/3 active). Trade for [{symbol_input}] displayed but NOT saved to DB."
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
         return False
+
+    # PUSHBULLET NOTIFICATION FOR EXECUTED TRADE
+    trade_title = f"🚀 [TRADE EXECUTED] {symbol_input} ({direction})"
+    trade_body = f"🪙 Pair: {symbol_input} | Side: {direction}\n"
+    trade_body += f"📊 Quant Score: {score}/100 | BTC Regime: {btc_regime}\n"
+    trade_body += "----------------------------------------\n"
+    trade_body += f"📍 Entry Price: ${live_price:.4f}\n"
+    trade_body += f"🛑 Stop Loss: ${sl_price:.4f} (-{sl_dist_pct:.2f}%)\n"
+    trade_body += f"🎯 Target 1 (TP1): ${tp1_price:.4f} (R:R 1:2.0)\n"
+    trade_body += f"🚀 Target 2 (TP2): ${tp2_price:.4f} (R:R 1:3.5)\n"
+    trade_body += f"🔄 Breakeven SL: ${breakeven_lock_level:.4f}\n"
+    trade_body += "----------------------------------------\n"
+    trade_body += f"💼 Total Portfolio: ${port['total']:.2f} USDT\n"
+    trade_body += f"💵 Available Cap Before: ${avail_cap:.2f} USDT\n"
+    trade_body += f"🔒 Margin Frozen: ${required_margin:.2f} USDT ({margin_pct*100:.0f}% Cap)\n"
+    trade_body += f"⚡ Leverage: {leverage}x | Volatility: {volatility_state}\n"
+    trade_body += f"📈 Total Position Value: ${pos_value:.2f} USDT\n"
+    trade_body += f"🪙 Coin Quantity: {coin_qty:.4f}\n"
+    trade_body += f"🛡️ Max Risk Amount: ${dollar_risk:.2f} USDT\n"
+    trade_body += f"📊 Active Trades Count: {active_count + 1}/3\n"
+
+    send_pushbullet_notification(trade_title, trade_body)
 
     save_trade_to_db({
         'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
