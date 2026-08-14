@@ -8,6 +8,8 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- FontAwesome Icons -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
+    <!-- Plotly.js for Interactive Zoomable Charts -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         body {
             background-color: #0b0f19;
@@ -24,28 +26,22 @@
             background-color: #1e293b;
             border: 1px solid #334155;
             border-radius: 12px;
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
         .badge-long { background-color: #16a34a; color: #fff; font-weight: bold; }
         .badge-short { background-color: #dc2626; color: #fff; font-weight: bold; }
         .metric-title { font-size: 0.72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
-        .metric-value { font-size: 1.05rem; font-weight: 700; color: #f8fafc; word-break: break-all; }
+        .metric-value { font-size: 1.1rem; font-weight: 700; color: #f8fafc; word-break: break-all; }
         .pnl-positive { color: #22c55e !important; }
         .pnl-negative { color: #ef4444 !important; }
         
-        /* Ultra Big Chart Container */
-        .big-chart-container {
+        /* Interactive Chart Container */
+        .chart-box {
             background-color: #0f172a;
             border: 1px solid #334155;
             border-radius: 12px;
-            padding: 10px;
-            box-shadow: inset 0 0 12px rgba(0,0,0,0.5);
-        }
-        .chart-img {
-            border-radius: 8px;
+            padding: 8px;
+            min-height: 480px;
             width: 100%;
-            max-height: 580px;
-            object-fit: contain;
         }
         
         /* 2x2 Card Grid Box */
@@ -53,11 +49,11 @@
             background-color: #0f172a;
             border: 1px solid #334155;
             border-radius: 10px;
-            padding: 14px;
+            padding: 12px;
             height: 100%;
         }
 
-        /* Dropdown Styling */
+        /* Dropdown & Buttons Styling */
         .coin-select {
             background-color: #0f172a;
             color: #38bdf8;
@@ -66,18 +62,17 @@
             border-radius: 8px;
             padding: 6px 12px;
         }
-        .coin-select:focus {
-            background-color: #0f172a;
-            color: #38bdf8;
-            border-color: #38bdf8;
-            box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
+        .tf-btn {
+            padding: 3px 10px;
+            font-size: 0.8rem;
+            border-radius: 6px;
         }
 
         @media (max-width: 576px) {
             .dashboard-header h3 { font-size: 1.2rem; }
             .metric-title { font-size: 0.65rem; }
             .metric-value { font-size: 0.95rem; }
-            .chart-img { max-height: 380px; }
+            .chart-box { min-height: 380px; padding: 2px; }
         }
     </style>
 </head>
@@ -140,7 +135,7 @@
         <div id="trades-container" class="mb-5">
             <div class="text-center py-5 text-muted">
                 <div class="spinner-border text-primary" role="status"></div>
-                <p class="mt-2 small">Fetching Active Trades & Rendering Technical Charts...</p>
+                <p class="mt-2 small">Fetching Active Trades & Interactive Charts...</p>
             </div>
         </div>
     </div>
@@ -149,6 +144,13 @@
     <script>
         let globalTradesData = [];
         let currentSelectedSymbol = "";
+        let currentInterval = "4h";
+
+        // Number Formatter (Rounds to 2 decimal places max)
+        function fmt(val) {
+            if (val === undefined || val === null) return "0.00";
+            return parseFloat(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
 
         async function loadDashboard() {
             try {
@@ -156,11 +158,10 @@
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    // Update Portfolio Metrics
                     if (data.portfolio) {
-                        document.getElementById('port-total').innerText = `$${parseFloat(data.portfolio.total_capital).toFixed(2)} USDT`;
-                        document.getElementById('port-avail').innerText = `$${parseFloat(data.portfolio.available_capital).toFixed(2)} USDT`;
-                        document.getElementById('port-frozen').innerText = `$${parseFloat(data.portfolio.frozen_margin).toFixed(2)} USDT`;
+                        document.getElementById('port-total').innerText = `$${fmt(data.portfolio.total_capital)} USDT`;
+                        document.getElementById('port-avail').innerText = `$${fmt(data.portfolio.available_capital)} USDT`;
+                        document.getElementById('port-frozen').innerText = `$${fmt(data.portfolio.frozen_margin)} USDT`;
                     }
 
                     globalTradesData = data.trades || [];
@@ -183,15 +184,14 @@
                 return;
             }
 
-            globalTradesData.forEach((item, idx) => {
+            globalTradesData.forEach((item) => {
                 const t = item.trade_info;
                 const opt = document.createElement('option');
                 opt.value = t.symbol;
-                opt.innerText = `${t.symbol} (${t.direction} ${t.leverage}x) — PnL: ${item.pnl_usdt >= 0 ? '+' : ''}${item.pnl_usdt} USDT`;
+                opt.innerText = `${t.symbol} (${t.direction} ${t.leverage}x) — PnL: ${item.pnl_usdt >= 0 ? '+' : ''}${fmt(item.pnl_usdt)} USDT`;
                 dropdown.appendChild(opt);
             });
 
-            // Retain selected symbol across auto-refreshes
             if (currentSelectedSymbol && globalTradesData.some(item => item.trade_info.symbol === currentSelectedSymbol)) {
                 dropdown.value = currentSelectedSymbol;
             } else {
@@ -200,7 +200,7 @@
             }
         }
 
-        function renderSelectedCoin() {
+        async function renderSelectedCoin() {
             const dropdown = document.getElementById('coinDropdown');
             currentSelectedSymbol = dropdown.value;
 
@@ -232,75 +232,141 @@
                         <span class="badge ${badgeClass} fs-6">${t.direction} ${t.leverage}x</span>
                     </div>
                     <div class="text-end mt-2 mt-sm-0">
-                        <span class="fs-3 fw-bold ${pnlClass}">${item.pnl_usdt >= 0 ? '+' : ''}${item.pnl_usdt} USDT</span>
-                        <span class="ms-2 fs-6 text-muted">(${item.pnl_pct}%) PnL</span>
+                        <span class="fs-3 fw-bold ${pnlClass}">${item.pnl_usdt >= 0 ? '+' : ''}${fmt(item.pnl_usdt)} USDT</span>
+                        <span class="ms-2 fs-6 text-muted">(${fmt(item.pnl_pct)}%) PnL</span>
                     </div>
                 </div>
 
-                <!-- Big High-Resolution Responsive Chart -->
-                <div class="big-chart-container text-center mb-4">
-                    <img src="data:image/png;base64,${item.chart}" class="chart-img" alt="Pro Analyst Chart">
+                <!-- Timeframe Selector Bar -->
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="fw-bold text-white small"><i class="fa-solid fa-magnifying-glass-plus me-1 text-primary"></i> Zoomable Chart</span>
+                    <div>
+                        <button onclick="changeTimeframe('15m')" class="btn btn-sm ${currentInterval==='15m'?'btn-primary':'btn-outline-secondary'} tf-btn">15m</button>
+                        <button onclick="changeTimeframe('1h')" class="btn btn-sm ${currentInterval==='1h'?'btn-primary':'btn-outline-secondary'} tf-btn">1h</button>
+                        <button onclick="changeTimeframe('4h')" class="btn btn-sm ${currentInterval==='4h'?'btn-primary':'btn-outline-secondary'} tf-btn">4h</button>
+                        <button onclick="changeTimeframe('1d')" class="btn btn-sm ${currentInterval==='1d'?'btn-primary':'btn-outline-secondary'} tf-btn">1d</button>
+                    </div>
                 </div>
 
-                <!-- Technical & Position Details (Clean 2x2 Grid Layout) -->
-                <h6 class="fw-bold text-white mb-3"><i class="fa-solid fa-sliders me-2 text-info"></i>Position Details & Metrics</h6>
+                <!-- Big Zoomable Plotly Chart -->
+                <div class="chart-box mb-4">
+                    <div id="plotlyChart" style="width:100%; height:480px;"></div>
+                </div>
+
+                <!-- Technical Metrics (Clean 2x2 Grid Rounded to 2 Decimals) -->
+                <h6 class="fw-bold text-white mb-3"><i class="fa-solid fa-sliders me-2 text-info"></i>Position Metrics</h6>
                 
-                <div class="row g-3">
-                    <!-- Top Row 2x2 Grid -->
+                <div class="row g-2 g-md-3">
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
-                            <div class="metric-title"><i class="fa-solid fa-bolt me-1 text-primary"></i> Live Market Price</div>
-                            <div class="metric-value mt-1">${item.live_price}</div>
+                            <div class="metric-title"><i class="fa-solid fa-bolt me-1 text-primary"></i> Live Price</div>
+                            <div class="metric-value mt-1">${fmt(item.live_price)}</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
                             <div class="metric-title"><i class="fa-solid fa-right-to-bracket me-1 text-info"></i> Entry Price</div>
-                            <div class="metric-value mt-1">${t.entry_price}</div>
+                            <div class="metric-value mt-1">${fmt(t.entry_price)}</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
-                            <div class="metric-title"><i class="fa-solid fa-shield-halved me-1 text-danger"></i> Stop Loss (SL)</div>
-                            <div class="metric-value text-danger mt-1">${t.sl_price}</div>
+                            <div class="metric-title"><i class="fa-solid fa-shield-halved me-1 text-danger"></i> Stop Loss</div>
+                            <div class="metric-value text-danger mt-1">${fmt(t.sl_price)}</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
                             <div class="metric-title"><i class="fa-solid fa-bullseye me-1 text-success"></i> Target (TP1)</div>
-                            <div class="metric-value text-success mt-1">${t.tp1_price}</div>
+                            <div class="metric-value text-success mt-1">${fmt(t.tp1_price)}</div>
                         </div>
                     </div>
 
-                    <!-- Bottom Row 2x2 Grid -->
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
-                            <div class="metric-title"><i class="fa-solid fa-wave-square me-1 text-warning"></i> 4H RSI Indicator</div>
-                            <div class="metric-value text-warning mt-1">${item.rsi}</div>
+                            <div class="metric-title"><i class="fa-solid fa-wave-square me-1 text-warning"></i> RSI Indicator</div>
+                            <div class="metric-value text-warning mt-1">${fmt(item.rsi)}</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
-                            <div class="metric-title"><i class="fa-solid fa-chart-area me-1 text-info"></i> 4H ATR Volatility</div>
-                            <div class="metric-value text-info mt-1">${item.atr}</div>
+                            <div class="metric-title"><i class="fa-solid fa-chart-area me-1 text-info"></i> ATR Volatility</div>
+                            <div class="metric-value text-info mt-1">${fmt(item.atr)}</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
-                            <div class="metric-title"><i class="fa-solid fa-scale-balanced me-1 text-light"></i> Position Notional Value</div>
-                            <div class="metric-value mt-1">$${parseFloat(t.pos_value).toFixed(2)}</div>
+                            <div class="metric-title"><i class="fa-solid fa-scale-balanced me-1 text-light"></i> Notional Value</div>
+                            <div class="metric-value mt-1">$${fmt(t.pos_value)}</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-card-2x2">
                             <div class="metric-title"><i class="fa-solid fa-lock me-1 text-warning"></i> Frozen Margin</div>
-                            <div class="metric-value text-warning mt-1">$${parseFloat(t.margin_frozen).toFixed(2)}</div>
+                            <div class="metric-value text-warning mt-1">$${fmt(t.margin_frozen)}</div>
                         </div>
                     </div>
                 </div>
             </div>`;
 
             container.innerHTML = cardHtml;
+            loadInteractivePlotlyChart(t.symbol, t, currentInterval);
+        }
+
+        async function changeTimeframe(tf) {
+            currentInterval = tf;
+            renderSelectedCoin();
+        }
+
+        async function loadInteractivePlotlyChart(symbol, trade, interval) {
+            try {
+                const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=70`);
+                const klines = await res.json();
+
+                const times = [], open = [], high = [], low = [], close = [];
+                klines.forEach(k => {
+                    times.push(new Date(k[0]));
+                    open.push(parseFloat(k[1]));
+                    high.push(parseFloat(k[2]));
+                    low.push(parseFloat(k[3]));
+                    close.push(parseFloat(k[4]));
+                });
+
+                const traceCandles = {
+                    x: times, open: open, high: high, low: low, close: close,
+                    type: 'candlestick',
+                    increasing: {line: {color: '#22c55e'}},
+                    decreasing: {line: {color: '#ef4444'}},
+                    name: symbol
+                };
+
+                const layout = {
+                    dragmode: 'zoom',
+                    autosize: true,
+                    margin: { r: 30, t: 20, l: 40, b: 40 },
+                    showlegend: false,
+                    xaxis: {
+                        rangeslider: { visible: false },
+                        gridcolor: '#334155'
+                    },
+                    yaxis: {
+                        gridcolor: '#334155',
+                        autorange: true
+                    },
+                    paper_bgcolor: '#0f172a',
+                    plot_bgcolor: '#0f172a',
+                    font: { color: '#cbd5e1' },
+                    shapes: [
+                        { type: 'line', x0: times[0], x1: times[times.length-1], y0: trade.entry_price, y1: trade.entry_price, line: { color: '#3b82f6', width: 2 } },
+                        { type: 'line', x0: times[0], x1: times[times.length-1], y0: trade.sl_price, y1: trade.sl_price, line: { color: '#ef4444', width: 2, dash: 'dot' } },
+                        { type: 'line', x0: times[0], x1: times[times.length-1], y0: trade.tp1_price, y1: trade.tp1_price, line: { color: '#22c55e', width: 2, dash: 'dot' } }
+                    ]
+                };
+
+                Plotly.newPlot('plotlyChart', [traceCandles], layout, {responsive: true, displayModeBar: false});
+            } catch (e) {
+                console.error("Plotly Chart Error:", e);
+            }
         }
 
         // Auto load on start & refresh every 30 seconds
