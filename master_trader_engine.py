@@ -15,11 +15,18 @@ except ImportError:
 # =========================================================
 # ⚙️ API ENDPOINTS
 # =========================================================
-BINANCE_SPOT_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_FUTURES_FUNDING_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
-BINANCE_FUTURES_DEPTH_URL = "https://fapi.binance.com/fapi/v1/depth"
-BINANCE_FUTURES_OI_URL = "https://fapi.binance.com/fapi/v1/openInterest"
+# =========================================================
+# ⚙️ API ENDPOINTS (Clean Data API Endpoints)
+# =========================================================
+# =========================================================
+# ⚙️ API ENDPOINTS (Clean Data API Endpoints)
+# =========================================================
+BINANCE_SPOT_URL = 'https://data-api.binance.vision/api/v3/klines'
+BINANCE_BOOK_TICKER_URL = 'https://data-api.binance.vision/api/v3/ticker/bookTicker'
+BINANCE_FUTURES_DEPTH_URL = 'https://data-api.binance.vision/api/v3/depth'  # Updated Variable Name
 
+BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
+BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
 # =========================================================
 # 🔌 DATABASE CONNECTION ENGINE (MYSQL + SQLITE FALLBACK)
 # =========================================================
