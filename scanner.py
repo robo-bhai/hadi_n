@@ -359,27 +359,37 @@ def check_db_trade_guard(symbol, direction=""):
 import time
 import requests
 
+import time
+import requests
+
 def send_pushbullet_notification(title, body):
     """
     Replaced Pushbullet with ntfy.sh for unlimited free alerts.
-    Includes Retry Logic and User-Agent to fix 'Network Unreachable' errors.
+    Fixed Encoding Issue: Clean title headers for latin-1 compatibility.
     """
     topic = "hadi88_quant_alerts_99"
     url = f"https://ntfy.sh/{topic}"
     
+    # Header se non-ASCII emojis remove karne ke liye safe title
+    clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
+    if not clean_title:
+        clean_title = "BINANCE QUANT ALERT"
+    
     headers = {
-        "Title": title,
+        "Title": clean_title,
         "Priority": "high",
         "Tags": "chart_with_upwards_trend,warning",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     
-    # 3 Retries in case of transient network drop
+    # Message Body (Supports full Unicode & Emojis via utf-8)
+    full_message = f"{title}\n\n{body}"
+    
     for attempt in range(1, 4):
         try:
             response = requests.post(
                 url,
-                data=f"{title}\n\n{body}".encode('utf-8'),
+                data=full_message.encode('utf-8'),
                 headers=headers,
                 timeout=15
             )
@@ -391,10 +401,11 @@ def send_pushbullet_notification(title, body):
         except Exception as e:
             print(f"⚠️ Ntfy Attempt {attempt} Network Error: {e}")
         
-        time.sleep(2)  # Retry se pehle 2 seconds wait karein
+        time.sleep(2)
         
     print("❌ All Ntfy retries exhausted.")
     return False
+
 
 
 
