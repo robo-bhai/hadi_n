@@ -1,9 +1,8 @@
 name: Live Crypto Dashboard Server
 
 on:
-  workflow_dispatch: # Allows manually starting the workflow from GitHub Actions tab
+  workflow_dispatch:
 
-# Automatically cancels any currently running instance of this workflow
 concurrency:
   group: crypto-dashboard-server
   cancel-in-progress: true
@@ -11,7 +10,7 @@ concurrency:
 jobs:
   run-server:
     runs-on: ubuntu-latest
-    timeout-minutes: 190 # Safety limit slightly above 3 hours
+    timeout-minutes: 190
 
     steps:
       - name: Checkout Repository
@@ -26,7 +25,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install flask mysql-connector-python pandas requests matplotlib
-          npm install -g localtunnel
+          
+          # Install Cloudflared CLI
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
 
       - name: Launch Flask Server in Background
         env:
@@ -40,22 +42,23 @@ jobs:
           echo "Waiting 5 seconds for Flask server to boot up..."
           sleep 5
 
-      - name: Create Tunnel & Send Link to Pushbullet
+      - name: Create Cloudflare Tunnel & Send Link to Pushbullet
         env:
           PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
         run: |
-          echo "Generating Public URL via Localtunnel..."
-          # Start localtunnel in background and save logs to url.txt
-          lt --port 5000 > tunnel.log 2>&1 &
-          sleep 5
+          echo "Generating Public URL via Cloudflare Tunnel..."
+          
+          # Start Quick Cloudflare Tunnel in background and capture logs
+          cloudflared tunnel --url http://localhost:5000 > cloudflare.log 2>&1 &
+          sleep 8
 
-          # Extract URL from log file
-          TUNNEL_URL=$(grep -o 'https://[^ ]*' tunnel.log | head -n 1)
+          # Extract trycloudflare.com URL from log file
+          TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflare.log | head -n 1)
           echo "Public Server URL: $TUNNEL_URL"
 
           if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ Failed to generate Tunnel URL"
-            cat tunnel.log
+            echo "❌ Failed to generate Cloudflare Tunnel URL"
+            cat cloudflare.log
             exit 1
           fi
 
@@ -63,12 +66,12 @@ jobs:
           curl -s -X POST https://api.pushbullet.com/v2/pushes \
             -H "Access-Token: $PUSHBULLET_TOKEN" \
             -H "Content-Type: application/json" \
-            --data-binary "{\"type\": \"note\", \"title\": \"🚀 Live Crypto Dashboard Link\", \"body\": \"Your live trading dashboard is active for 3 hours:\n\n$TUNNEL_URL\"}"
+            --data-binary "{\"type\": \"note\", \"title\": \"🚀 Live Crypto Dashboard Link (Cloudflare)\", \"body\": \"Your live trading dashboard is active:\n\n$TUNNEL_URL\"}"
           
           echo "✅ Pushbullet alert sent successfully!"
 
       - name: Keep Server Running for 3 Hours
         run: |
-          echo "⏳ Server is running. Will stay active for 3 hours (10,800 seconds)..."
+          echo "⏳ Server is running via Cloudflare. Will stay active for 3 hours..."
           sleep 10800
           echo "🛑 3 hours completed. Shutting down server."
