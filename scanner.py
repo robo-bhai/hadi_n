@@ -562,7 +562,7 @@ def analyze_legendary_setup(symbol, btc_regime):
 
     signal, bias = 'NEUTRAL 🟡', 'NO TRADE'
 
-    if score >= 65:
+    if score >= 58:
         if is_mtf_bearish:
             signal, bias = '⚠️ BLOCKED LONG (Bearish MTF Trend)', 'HIGH RISK'
         elif btc_regime == 'BEARISH' and symbol != 'BTCUSDT':
@@ -570,7 +570,7 @@ def analyze_legendary_setup(symbol, btc_regime):
         else:
             signal, bias = '🔥 LEGENDARY LONG', 'LONG'
 
-    elif score <= 35:
+    elif score <= 42:
         if is_mtf_bullish:
             signal, bias = '⚠️ BLOCKED SHORT (Bullish MTF Trend)', 'HIGH RISK'
         elif btc_regime == 'BULLISH' and symbol != 'BTCUSDT':
