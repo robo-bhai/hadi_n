@@ -357,22 +357,31 @@ def check_db_trade_guard(symbol, direction=""):
 # 📲 NOTIFICATIONS & INDICATORS
 # =========================================================
 def send_pushbullet_notification(title, body):
-    api_token = os.getenv('PUSHBULLET_TOKEN')
-    if not api_token:
-        print('⚠️ PUSHBULLET_TOKEN is not set in environment variables.')
-        return
-
-    url = 'https://api.pushbullet.com/v2/pushes'
-    headers = {'Access-Token': api_token, 'Content-Type': 'application/json'}
-    payload = {'type': 'note', 'title': title, 'body': body}
+    """
+    Replaced Pushbullet with ntfy.sh for unlimited free alerts.
+    Topic: hadi88_quant_alerts_99
+    """
+    topic = "hadi88_quant_alerts_99"
+    url = f"https://ntfy.sh/{topic}"
+    
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
-        if res.status_code == 200:
-            print('🚀 Pushbullet notification sent successfully!')
+        response = requests.post(
+            url,
+            data=f"{title}\n\n{body}".encode('utf-8'),
+            headers={
+                "Title": title,
+                "Priority": "high",
+                "Tags": "chart_with_upwards_trend,warning"
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            print("🚀 Ntfy notification sent successfully!")
         else:
-            print(f'❌ Failed to send Pushbullet notification: Status {res.status_code} - {res.text}')
+            print(f"❌ Failed to send Ntfy notification: Status {response.status_code} - {response.text}")
     except Exception as e:
-        print(f'❌ Pushbullet API Request Error: {e}')
+        print(f"❌ Ntfy API Request Error: {e}")
+
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
