@@ -456,7 +456,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("=" * 70)
 
     # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
-    if active_count >= 3:
+    if active_count >= 5:
         msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 3 Active Trades limit reached ({active_count}/3)."
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
