@@ -241,22 +241,36 @@ def calculate_atr(df, period=14):
     return tr.rolling(window=period).mean()
 
 def calculate_adx(df, period=14):
+    """
+    Quant-Grade Directional Movement Index (ADX) 
+    Fixes typo bug and implements TradingView precision smoothings.
+    """
     try:
-        df = df.copy()
-        df['up'] = df['high'] - df['high'].shift(1)
-        df['down'] = df['low'].shift(1) - df['low']
-        df['+dm'] = ((df['up'] > df['down']) & (df['up'] > 0)) * df['up']
-        df['-dm'] = ((df['down'] > df['up']) & (df['down'] > 0)) * df['-dm']
-        df['atr'] = calculate_atr(df, period)
-
-        df['+di'] = 100 * (df['+dm'].ewm(alpha=1 / period).mean() / df['atr'].replace(0, 0.00001))
-        df['-di'] = 100 * (df['-dm'].ewm(alpha=1 / period).mean() / df['atr'].replace(0, 0.00001))
-
-        di_sum = (df['+di'] + df['-di']).replace(0, 0.00001)
-        dx = 100 * (df['+di'] - df['-di']).abs() / di_sum
-        return dx.ewm(alpha=1 / period).mean().iloc[-1]
+        df_calc = df.copy()
+        high = df_calc['high']
+        low = df_calc['low']
+        
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+        
+        # Up/Down Directional Movement vectors
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        
+        atr = calculate_atr(df_calc, period).replace(0, 1e-9)
+        
+        # Exponential Smoothing (Wilder's Alpha = 1 / period)
+        plus_di = 100 * (pd.Series(plus_dm, index=df_calc.index).ewm(alpha=1/period, adjust=False).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm, index=df_calc.index).ewm(alpha=1/period, adjust=False).mean() / atr)
+        
+        di_sum = (plus_di + minus_di).replace(0, 1e-9)
+        dx = 100 * (plus_di - minus_di).abs() / di_sum
+        
+        adx = dx.ewm(alpha=1/period, adjust=False).mean()
+        return float(adx.iloc[-1]) if not adx.empty and not pd.isna(adx.iloc[-1]) else 0.0
     except Exception:
         return 0.0
+
 
 # =========================================================
 # 📊 BINANCE MARKET & QUANT FETCHERS
