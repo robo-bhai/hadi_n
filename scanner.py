@@ -356,31 +356,46 @@ def check_db_trade_guard(symbol, direction=""):
 # =========================================================
 # 📲 NOTIFICATIONS & INDICATORS
 # =========================================================
+import time
+import requests
+
 def send_pushbullet_notification(title, body):
     """
     Replaced Pushbullet with ntfy.sh for unlimited free alerts.
-    Topic: hadi88_quant_alerts_99
+    Includes Retry Logic and User-Agent to fix 'Network Unreachable' errors.
     """
     topic = "hadi88_quant_alerts_99"
     url = f"https://ntfy.sh/{topic}"
     
-    try:
-        response = requests.post(
-            url,
-            data=f"{title}\n\n{body}".encode('utf-8'),
-            headers={
-                "Title": title,
-                "Priority": "high",
-                "Tags": "chart_with_upwards_trend,warning"
-            },
-            timeout=10
-        )
-        if response.status_code == 200:
-            print("🚀 Ntfy notification sent successfully!")
-        else:
-            print(f"❌ Failed to send Ntfy notification: Status {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"❌ Ntfy API Request Error: {e}")
+    headers = {
+        "Title": title,
+        "Priority": "high",
+        "Tags": "chart_with_upwards_trend,warning",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    
+    # 3 Retries in case of transient network drop
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(
+                url,
+                data=f"{title}\n\n{body}".encode('utf-8'),
+                headers=headers,
+                timeout=15
+            )
+            if response.status_code == 200:
+                print("🚀 Ntfy notification sent successfully!")
+                return True
+            else:
+                print(f"⚠️ Ntfy Attempt {attempt} failed: Status {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"⚠️ Ntfy Attempt {attempt} Network Error: {e}")
+        
+        time.sleep(2)  # Retry se pehle 2 seconds wait karein
+        
+    print("❌ All Ntfy retries exhausted.")
+    return False
+
 
 
 def calculate_rsi(series, period=14):
