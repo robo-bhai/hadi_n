@@ -417,24 +417,25 @@ def get_btc_regime():
     return "CHOPPY", latest_close
 
 def check_micro_momentum(df, direction):
+    # Data glitch ya kam candles hone par True return karein taakay valid trade block na ho
     if df is None or len(df) < 5:
-        return False
+        return True
         
     df_m = df.copy()
     ema_3 = df_m['close'].ewm(span=3, adjust=False).mean()
     ema_8 = df_m['close'].ewm(span=8, adjust=False).mean()
-    roc = df_m['close'].pct_change(periods=3) * 100
 
     latest_ema3 = ema_3.iloc[-1]
     latest_ema8 = ema_8.iloc[-1]
-    latest_roc = roc.iloc[-1]
 
+    # Optimized Expert Logic: Lagging ROC ko remove kar ke fast EMA alignment use ki hai
     if direction == "LONG":
-        return (latest_ema3 > latest_ema8) and (latest_roc > 0)
+        return latest_ema3 >= latest_ema8
     elif direction == "SHORT":
-        return (latest_ema3 < latest_ema8) and (latest_roc < 0)
+        return latest_ema3 <= latest_ema8
 
     return False
+
 
 
 # =========================================================
@@ -600,8 +601,12 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         micro_5m = check_micro_momentum(df_5m, direction)
 
         if not (micro_15m or micro_5m):
-            trade_possible = False
-            status_msg = f"⏳ NO TRADE: Waiting for Micro-Timeframe Reversal (15M/5M EMA 3/8 & ROC)"
+            # 💡 High Quant Score Bypass Guard
+            if (direction == "LONG" and score >= 60) or (direction == "SHORT" and score <= 40):
+                print(f"⚡ High Score ({score}): Overriding Micro-Delay for Instant Execution!")
+            else:
+                trade_possible = False
+                status_msg = f"⏳ NO TRADE: Waiting for Micro-Timeframe Alignment"
 
     print("\n" + "=" * 70)
     print(f"📊 LIVE QUANT REPORT: [{symbol_input}] | Score: {score}/100")
@@ -625,6 +630,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
                 
         send_pushbullet_notification(f"💤 [NO TRADE] {symbol_input} (Score: {score})", no_trade_body)
         return False
+
 
     # =========================================================
     # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
