@@ -76,6 +76,155 @@ MAX_ACCOUNT_RISK_PCT = 0.01
 # =========================================================
 # 🔌 RESPONSIVE MYSQL & DATABASE CONNECTION ENGINE
 # =========================================================
+
+import sqlite3
+
+# =========================================================
+# 🔌 PAPER TRADING DATABASE ENGINE & SAVER
+# =========================================================
+def get_paper_trade_db_connection():
+    """
+    Connects to Aiven MySQL for Paper Trading DB using PASS_DB_2 secret.
+    Falls back to local SQLite if MySQL is unavailable.
+    """
+    db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
+    db_user = "avnadmin"
+    db_name = "defaultdb"
+    db_port = 13722
+
+    # Secret key read from environment
+    db_pass = os.environ.get("PASS_DB_2", "").strip()
+
+    if MYSQL_AVAILABLE and db_pass:
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+
+            conn = mysql.connector.connect(
+                host=db_host,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                port=db_port,
+                ssl_context=ssl_ctx,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception:
+            pass
+
+        try:
+            conn = mysql.connector.connect(
+                host=db_host,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                port=db_port,
+                ssl_disabled=False,
+                ssl_verify_cert=False,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception as e:
+            print(f"⚠️ Paper MySQL Connection Error: {e}. Falling back to SQLite...")
+
+    # Fallback to local SQLite
+    conn = sqlite3.connect("paper_trading_system.db")
+    return conn, "SQLITE"
+
+
+def save_signal_to_paper_trade_db(trade):
+    """
+    Saves high conviction signal to Paper Trade DB.
+    Returns True if a NEW record was saved, False if it was already active.
+    """
+    conn, mode = get_paper_trade_db_connection()
+    if not conn:
+        print(f"❌ [PAPER DB] Connection failed for {trade['symbol']}")
+        return False
+
+    symbol = trade['symbol']
+    direction = trade['bias']
+
+    try:
+        cursor = conn.cursor(dictionary=True) if mode == "MYSQL" else conn.cursor()
+
+        # Table schema setup
+        create_tbl = """
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            direction VARCHAR(10) NOT NULL,
+            entry_price DECIMAL(18,8),
+            stop_loss DECIMAL(18,8),
+            target_1 DECIMAL(18,8),
+            target_2 DECIMAL(18,8),
+            score INT,
+            leverage INT,
+            margin_usdt DECIMAL(10,2),
+            status VARCHAR(20) DEFAULT 'ACTIVE',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """ if mode == "MYSQL" else """
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry_price REAL,
+            stop_loss REAL,
+            target_1 REAL,
+            target_2 REAL,
+            score INTEGER,
+            leverage INTEGER,
+            margin_usdt REAL,
+            status TEXT DEFAULT 'ACTIVE',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        cursor.execute(create_tbl)
+
+        # 1. Duplicate check within Paper DB
+        chk_query = (
+            "SELECT id FROM paper_trades WHERE symbol = %s AND status = 'ACTIVE'"
+            if mode == "MYSQL"
+            else "SELECT id FROM paper_trades WHERE symbol = ? AND status = 'ACTIVE'"
+        )
+        cursor.execute(chk_query, (symbol,))
+        if cursor.fetchone():
+            print(f"⚠️ [PAPER DB] {symbol} is already ACTIVE in Paper DB.")
+            conn.close()
+            return False
+
+        # 2. Insert new signal into Paper DB
+        insert_query = """
+        INSERT INTO paper_trades 
+        (symbol, direction, entry_price, stop_loss, target_1, target_2, score, leverage, margin_usdt, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
+        """ if mode == "MYSQL" else """
+        INSERT INTO paper_trades 
+        (symbol, direction, entry_price, stop_loss, target_1, target_2, score, leverage, margin_usdt, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+        """
+
+        vals = (
+            symbol, direction, trade['entry'], trade['sl'], trade['tp1'],
+            trade['tp2'], trade['score'], trade['leverage'], trade['margin_usdt']
+        )
+        cursor.execute(insert_query, vals)
+        conn.commit()
+        conn.close()
+        print(f"✅ [PAPER DB] Saved new signal for {symbol} ({direction})")
+        return True
+
+    except Exception as e:
+        print(f"❌ [PAPER DB] Error saving record: {e}")
+        if conn:
+            conn.close()
+        return False
+
+
+
 def get_db_connection():
     """
     Connects to Remote MySQL (Aiven/GitHub Secrets) with Responsive Multi-Engine SSL.
@@ -685,14 +834,11 @@ def run_legendary_engine():
         alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
         alert_body += '========================================\n\n'
 
-
- 
-  
- 
-  
-    #'========================================\n\n'
-
         for item in pushbullet_signals:
+            # Save signal to Paper DB
+            save_signal_to_paper_trade_db(item)
+
+            # Build Pushbullet Notification Body
             alert_body += f"🪙 PAIR: {item['symbol']}\n"
             alert_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
             alert_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
@@ -721,7 +867,7 @@ def run_legendary_engine():
         print('=' * 80)
         for item in blocked_trades:
             print(f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100")
-            print(f'   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n')
+            print(f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n")
 
     if rejected:
         print('=' * 80)
@@ -730,7 +876,7 @@ def run_legendary_engine():
         for r in rejected[:15]:
             print(f"❌ {r['symbol']:<10} | Reason: {r['reason']}")
         if len(rejected) > 15:
-            print(f'   ... and {len(rejected) - 15} more coins rejected for safe trading.')
+            print(f"   ... and {len(rejected) - 15} more coins rejected for safe trading.")
         print('\n')
 
     print('=' * 80)
@@ -739,6 +885,7 @@ def run_legendary_engine():
     summary_list = [f"{i['symbol']}:{i['score']}" for i in neutral_trades]
     print('   ' + (', '.join(summary_list) if summary_list else 'None'))
     print('\n' + '=' * 80 + '\n')
+
 
     # =========================================================
     # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
