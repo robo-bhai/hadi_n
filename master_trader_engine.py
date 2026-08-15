@@ -579,13 +579,13 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     trade_possible = True
     direction = "NONE"
 
-    if score >= 65:
+    if score >= 58:
         if btc_regime == "BEARISH" and symbol_input != "BTCUSDT":
             trade_possible = False
             status_msg = "⚠️ NO TRADE: Macro BTC Trend is BEARISH"
         else:
             direction = "LONG"
-    elif score <= 35:
+    elif score <= 42:
         if btc_regime == "BULLISH" and symbol_input != "BTCUSDT":
             trade_possible = False
             status_msg = "⚠️ NO TRADE: Macro BTC Trend is BULLISH"
@@ -593,7 +593,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
             direction = "SHORT"
     else:
         trade_possible = False
-        status_msg = "💤 NO TRADE: Score in Chop Zone (36-64)"
+        status_msg = "💤 NO TRADE: Score in Chop Zone (42-57)"
 
     if trade_possible:
         micro_15m = check_micro_momentum(df_15m, direction)
