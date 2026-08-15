@@ -125,6 +125,69 @@ def get_db_connection():
 
     return None, "NONE"
 
+
+# =========================================================
+# 🛡️ LIVE DATABASE TRADE & SL GUARD CHECKER
+# =========================================================
+
+# =========================================================
+# 🛡️ LIVE DATABASE TRADE & SL GUARD CHECKER
+# =========================================================
+def check_db_trade_guard(symbol, direction=""):
+    """
+    Checks Live Database for:
+    1. Active Trade on the same symbol.
+    2. Trade closed via Stop Loss (SL) in the last 24 hours.
+    Returns: (is_blocked: bool, reason: str)
+    """
+    conn, mode = get_db_connection()
+    if mode != "MYSQL" or not conn:
+        print(f"⚠️ DB Guard Warning: Database connection unavailable. Skipping DB check for {symbol}.")
+        return False, ""
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+
+        # 1. Active Trade Check (Same Symbol)
+        query_active = """
+            SELECT id, direction, entry_price FROM trades 
+            WHERE symbol = %s AND status = 'ACTIVE'
+        """
+        cursor.execute(query_active, (symbol,))
+        active_trade = cursor.fetchone()
+
+        if active_trade:
+            active_dir = active_trade.get('direction', '')
+            conn.close()
+            reason = f"Active trade already exists on {symbol} (Direction: {active_dir})."
+            return True, reason
+
+        # 2. Last 24 Hours SL Hit Check
+        query_sl = """
+            SELECT id, exit_reason, updated_at FROM trades 
+            WHERE symbol = %s 
+              AND status = 'CLOSED' 
+              AND (exit_reason LIKE '%SL%' OR exit_reason LIKE '%STOP_LOSS%')
+              AND updated_at >= NOW() - INTERVAL 24 HOUR
+            ORDER BY updated_at DESC LIMIT 1
+        """
+        cursor.execute(query_sl, (symbol,))
+        sl_trade = cursor.fetchone()
+
+        conn.close()
+
+        if sl_trade:
+            reason = f"Trade on {symbol} hit Stop Loss in the last 24 hours."
+            return True, reason
+
+        return False, ""
+
+    except Exception as e:
+        print(f"❌ DB Guard Query Error for {symbol}: {e}")
+        if conn:
+            conn.close()
+        return False, ""
+
 # =========================================================
 # 📲 NOTIFICATIONS & INDICATORS
 # =========================================================
@@ -659,16 +722,40 @@ def run_legendary_engine():
     # =========================================================
     # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
     # =========================================================
+    # =========================================================
+    # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER (WITH LIVE DB GUARD)
+    # =========================================================
     if TRADER_ENGINE_AVAILABLE and pushbullet_signals:
-        print(f"\n🤖 [AUTOMATION BRIDGE] Found {len(pushbullet_signals)} high conviction signal(s). Executing...")
+        print(f"\n🤖 [AUTOMATION BRIDGE] Found {len(pushbullet_signals)} high conviction signal(s). Checking DB Guard...")
         
         executed_trades = []
         for trade in pushbullet_signals:
             symbol = trade['symbol']
             score = trade['score']
-            print(f"🚀 Triggering Trader Engine for [{symbol}] (Score: {score})...")
+            direction = trade['bias']
             
-            # Execute trade using master trader engine logic
+            # 1. Check Live MySQL Database for Active Trade / 24h SL Hit
+            is_blocked, block_reason = check_db_trade_guard(symbol, direction)
+
+            if is_blocked:
+                # A. Console Log
+                print(f"🛡️ [DB GUARD BLOCKED] Skipping Engine for {symbol}: {block_reason}")
+                
+                # B. Responsive Pushbullet Alert
+                alert_title = f"🛡️ TRADE GUARD BLOCKED: {symbol}"
+                alert_body = (
+                    f"⚠️ Engine execution bypassed for {symbol}.\n"
+                    f"📌 Reason: {block_reason}\n"
+                    f"📊 Signal Bias: {direction} | Score: {score}/100\n"
+                    f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                send_pushbullet_notification(alert_title, alert_body)
+                
+                # Bypass trader engine execution for this coin
+                continue
+
+            # 2. Execute trade using master trader engine logic if passed DB Guard
+            print(f"🚀 Triggering Trader Engine for [{symbol}] (Score: {score})...")
             result = process_trade_logic(symbol)
             executed_trades.append({"symbol": symbol, "score": score, "result": result})
             
@@ -695,4 +782,3 @@ def run_legendary_engine():
 
 if __name__ == '__main__':
     run_legendary_engine()
-
