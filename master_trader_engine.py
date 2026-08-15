@@ -397,18 +397,28 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"📊 ACTIVE TRADES IN DB: {active_count}/3")
     print("=" * 70)
 
+    # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
+    if active_count >= 3:
+        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 3 Active Trades limit reached ({active_count}/3)."
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 2: Low Available Capital
     if port['available'] < 5.0:
         msg = f"❌ Low Available Capital (${port['available']:.2f} USDT). Cannot place trade."
         print(msg)
         send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
         return False
 
+    # 🔴 EARLY GUARD 3: Duplicate Active Pair Check
     if is_coin_trade_active(symbol_input):
         msg = f"❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!"
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
         return False
 
+    # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
     corr_risk, corr_msg = check_correlation_exposure(symbol_input)
     if corr_risk:
         msg = f"⚠️ CORRELATION BLOCKED: {corr_msg}"
@@ -545,7 +555,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     if not trade_possible:
         print(f"\n🚫 TRADE STATUS: {status_msg}\n")
         
-        # PUSHBULLET NOTIFICATION FOR NO TRADE
         no_trade_body = f"🪙 Pair: {symbol_input}\n"
         no_trade_body += f"📊 Quant Score: {score}/100\n"
         no_trade_body += f"💰 Current Price: ${live_price:.4f}\n"
@@ -571,14 +580,10 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
         risk_dist = live_price - sl_price
         
-        # Level Resistance-Based Target
         tp1_price = resistance_4h
         reward_dist = tp1_price - live_price
         
-        # Calculate Real Market RRR
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
-        
-        # Target 2: Extended Target
         tp2_price = live_price + (risk_dist * max(2.5, calculated_rrr * 1.3))
         breakeven_lock_level = tp1_price
 
@@ -586,14 +591,10 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
         risk_dist = sl_price - live_price
         
-        # Level Support-Based Target
         tp1_price = support_4h
         reward_dist = live_price - tp1_price
         
-        # Calculate Real Market RRR
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
-        
-        # Target 2: Extended Target
         tp2_price = live_price - (risk_dist * max(2.5, calculated_rrr * 1.3))
         breakeven_lock_level = tp1_price
 
@@ -607,10 +608,15 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     # 🛑 STRICT FILTER 2: Total Capital 1% Risk Based Position Sizing
     sl_dist_pct = (risk_dist / live_price) * 100
+    if sl_dist_pct <= 0:
+        msg = f"❌ TRADE REJECTED: Invalid SL distance percentage ({sl_dist_pct:.2f}%)."
+        print(f"\n{msg}\n")
+        return False
+
     pos_value = max_allowed_dollar_risk / (sl_dist_pct / 100.0)
     required_margin = pos_value / leverage
     coin_qty = pos_value / live_price
-    dollar_risk = max_allowed_dollar_risk  # Always Locked to 1% Capital ($1.00 USDT)
+    dollar_risk = max_allowed_dollar_risk
 
     # Capital Check
     if required_margin > port['available']:
@@ -637,12 +643,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"║ 🔒 MARGIN FROZEN       : ${required_margin:<15.2f} (-{margin_pct*100:.0f}% Available Cap)  ║")
     print(f"║ 🛡️ MAX RISK AMOUNT     : ${dollar_risk:<15.2f} (Strict 1% Total Equity)║")
     print("╚" + "═" * 68 + "╝")
-
-    if active_count >= 3:
-        msg = f"💡 TIP: Maximum 3 Active Trades limit reached ({active_count}/3 active). Trade for [{symbol_input}] displayed but NOT saved to DB."
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
-        return False
 
     # PUSHBULLET NOTIFICATION FOR EXECUTED TRADE
     trade_title = f"🚀 [TRADE EXECUTED] {symbol_input} ({direction})"
@@ -673,6 +673,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
+
 
 
 def master_trade_analyzer():
