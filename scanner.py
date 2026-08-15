@@ -141,28 +141,32 @@ def check_db_trade_guard(symbol, direction=""):
     Returns: (is_blocked: bool, reason: str)
     """
     conn, mode = get_db_connection()
-    if mode != "MYSQL" or not conn:
+    if not conn:
         print(f"⚠️ DB Guard Warning: Database connection unavailable. Skipping DB check for {symbol}.")
         return False, ""
 
     try:
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(dictionary=True) if mode == "MYSQL" else conn.cursor()
 
         # 1. Active Trade Check (Same Symbol)
         query_active = """
             SELECT id, direction, entry_price FROM trades 
             WHERE symbol = %s AND status = 'ACTIVE'
+        """ if mode == "MYSQL" else """
+            SELECT id, direction, entry_price FROM trades 
+            WHERE symbol = ? AND status = 'ACTIVE'
         """
+        
         cursor.execute(query_active, (symbol,))
         active_trade = cursor.fetchone()
 
         if active_trade:
-            active_dir = active_trade.get('direction', '')
+            active_dir = active_trade['direction'] if isinstance(active_trade, dict) else active_trade[1]
             conn.close()
             reason = f"Active trade already exists on {symbol} (Direction: {active_dir})."
             return True, reason
 
-        # 2. Last 24 Hours SL Hit Check
+        # 2. Last 24 Hours SL Hit Check (MySQL & SQLite Compatible)
         query_sl = """
             SELECT id, exit_reason, updated_at FROM trades 
             WHERE symbol = %s 
@@ -170,7 +174,15 @@ def check_db_trade_guard(symbol, direction=""):
               AND (exit_reason LIKE '%SL%' OR exit_reason LIKE '%STOP_LOSS%')
               AND updated_at >= NOW() - INTERVAL 24 HOUR
             ORDER BY updated_at DESC LIMIT 1
+        """ if mode == "MYSQL" else """
+            SELECT id, exit_reason, updated_at FROM trades 
+            WHERE symbol = ? 
+              AND status = 'CLOSED' 
+              AND (exit_reason LIKE '%SL%' OR exit_reason LIKE '%STOP_LOSS%')
+              AND updated_at >= datetime('now', '-24 hours')
+            ORDER BY updated_at DESC LIMIT 1
         """
+        
         cursor.execute(query_sl, (symbol,))
         sl_trade = cursor.fetchone()
 
@@ -185,8 +197,12 @@ def check_db_trade_guard(symbol, direction=""):
     except Exception as e:
         print(f"❌ DB Guard Query Error for {symbol}: {e}")
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
         return False, ""
+
 
 # =========================================================
 # 📲 NOTIFICATIONS & INDICATORS

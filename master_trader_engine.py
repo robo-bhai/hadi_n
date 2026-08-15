@@ -247,37 +247,72 @@ def save_trade_to_db(trade_data):
 # =========================================================
 # 📈 TECHNICAL INDICATORS & DATA FETCHERS
 # =========================================================
+import numpy as np
+import pandas as pd
+import requests
+
+# ------------------------------------------------------------------------------
+# 1. TECHNICAL INDICATORS (TradingView / Quant-Grade Precision)
+# ------------------------------------------------------------------------------
+
 def calculate_rsi(series, period=14):
+    """Wilder's Smoothing RSI (Matches Binance & TradingView native indicators)"""
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    loss = loss.replace(0, 0.00001)
-    return 100 - (100 / (1 + (gain / loss)))
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    
+    # Wilder's Exponential Moving Average (alpha = 1 / period)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    
+    avg_loss = avg_loss.replace(0, 1e-9)
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
 def calculate_atr(df, period=14):
-    df = df.copy()
-    high_low = df['high'] - df['low']
-    high_cp = (df['high'] - df['close'].shift(1)).abs()
-    low_cp = (df['low'] - df['close'].shift(1)).abs()
-    df['tr'] = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
-    df['atr'] = df['tr'].rolling(window=period).mean()
-    return df['atr']
+    """Wilder's Smoothing ATR (RMA) with Zero Copy Overhead"""
+    high = df['high']
+    low = df['low']
+    close_prev = df['close'].shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - close_prev).abs()
+    tr3 = (low - close_prev).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    # TradingView style RMA smoothing
+    atr = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    return atr
 
 def calculate_adx(df, period=14):
+    """Full Directional Movement Index (ADX) with Precision Smoothings"""
     try:
-        df = df.copy()
-        df['up'] = df['high'] - df['high'].shift(1)
-        df['down'] = df['low'].shift(1) - df['low']
-        df['+dm'] = ((df['up'] > df['down']) & (df['up'] > 0)) * df['up']
-        df['-dm'] = ((df['down'] > df['up']) & (df['down'] > 0)) * df['down']
-        df['atr'] = calculate_atr(df, period)
-        df['+di'] = 100 * (df['+dm'].ewm(alpha=1/period).mean() / df['atr'])
-        df['-di'] = 100 * (df['-dm'].ewm(alpha=1/period).mean() / df['atr'])
-        di_sum = (df['+di'] + df['-di']).replace(0, 0.00001)
-        dx = 100 * (df['+di'] - df['-di']).abs() / di_sum
-        return dx.ewm(alpha=1/period).mean().iloc[-1]
+        df_calc = df.copy()
+        high = df_calc['high']
+        low = df_calc['low']
+        
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+        
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        
+        atr = calculate_atr(df_calc, period).replace(0, 1e-9)
+        
+        plus_di = 100 * (pd.Series(plus_dm, index=df_calc.index).ewm(alpha=1/period, adjust=False).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm, index=df_calc.index).ewm(alpha=1/period, adjust=False).mean() / atr)
+        
+        di_sum = (plus_di + minus_di).replace(0, 1e-9)
+        dx = 100 * (plus_di - minus_di).abs() / di_sum
+        
+        adx = dx.ewm(alpha=1/period, adjust=False).mean()
+        return float(adx.iloc[-1]) if not adx.empty else 0.0
     except Exception:
         return 0.0
+
+# ------------------------------------------------------------------------------
+# 2. MARKET DATA FETCHERS (Speed & Reliability Optimized)
+# ------------------------------------------------------------------------------
 
 def fetch_klines(symbol, interval="4h", limit=100):
     url = f"{BINANCE_SPOT_URL}?symbol={symbol}&interval={interval}&limit={limit}"
@@ -285,9 +320,13 @@ def fetch_klines(symbol, interval="4h", limit=100):
         res = requests.get(url, timeout=5)
         if res.status_code != 200:
             return None
-        df = pd.DataFrame(res.json(), columns=['time', 'open', 'high', 'low', 'close', 'volume', '_', '_', '_', '_', '_', '_'])
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
+        data = res.json()
+        if not data or not isinstance(data, list):
+            return None
+            
+        df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'volume', '_', '_', '_', '_', '_', '_'])
+        cols = ['open', 'high', 'low', 'close', 'volume']
+        df[cols] = df[cols].astype(float)
         return df
     except Exception:
         return None
@@ -297,7 +336,8 @@ def fetch_funding_rate(symbol):
         url = f"{BINANCE_FUTURES_FUNDING_URL}?symbol={symbol}"
         res = requests.get(url, timeout=4)
         if res.status_code == 200:
-            return float(res.json().get('lastFundingRate', 0.0)) * 100
+            val = res.json().get('lastFundingRate')
+            return float(val) * 100 if val is not None else 0.0
     except Exception:
         pass
     return 0.0
@@ -308,10 +348,14 @@ def fetch_orderbook_imbalance(symbol):
         res = requests.get(url, timeout=4)
         if res.status_code == 200:
             data = res.json()
-            bids_vol = sum([float(item[1]) for item in data.get('bids', [])])
-            asks_vol = sum([float(item[1]) for item in data.get('asks', [])])
+            bids = data.get('bids', [])
+            asks = data.get('asks', [])
+            
+            bids_vol = sum(float(item[1]) for item in bids)
+            asks_vol = sum(float(item[1]) for item in asks)
+            
             ratio = bids_vol / asks_vol if asks_vol > 0 else 1.0
-            return ratio, bids_vol, asks_vol
+            return float(ratio), float(bids_vol), float(asks_vol)
     except Exception:
         pass
     return 1.0, 0.0, 0.0
@@ -321,10 +365,15 @@ def fetch_open_interest(symbol):
         url = f"{BINANCE_FUTURES_OI_URL}?symbol={symbol}"
         res = requests.get(url, timeout=4)
         if res.status_code == 200:
-            return float(res.json().get('openInterest', 0.0))
+            val = res.json().get('openInterest')
+            return float(val) if val is not None else 0.0
     except Exception:
         pass
     return 0.0
+
+# ------------------------------------------------------------------------------
+# 3. PORTFOLIO & MACRO EXPOSURE ENGINE
+# ------------------------------------------------------------------------------
 
 CORRELATION_GROUPS = {
     'LAYER_1': ['SOLUSDT', 'SUIUSDT', 'AVAXUSDT', 'NEARUSDT', 'APTUSDT', 'DOTUSDT', 'LTCUSDT'],
@@ -334,51 +383,59 @@ CORRELATION_GROUPS = {
 
 def check_correlation_exposure(symbol_input):
     active_symbols = get_active_symbols()
+    symbol_clean = str(symbol_input).upper().strip()
     target_group = None
     
     for group, coins in CORRELATION_GROUPS.items():
-        if symbol_input in coins:
+        if symbol_clean in coins:
             target_group = group
             break
 
     if target_group:
-        for act in active_symbols:
-            if act in CORRELATION_GROUPS[target_group]:
+        active_set = set(str(s).upper().strip() for s in active_symbols)
+        for act in active_set:
+            if act in CORRELATION_GROUPS[target_group] and act != symbol_clean:
                 return True, f"High Correlation Exposure! Already running [{act}] from {target_group} category."
     return False, ""
 
 def get_btc_regime():
     df_daily = fetch_klines("BTCUSDT", interval="1d", limit=60)
-    if df_daily is None:
+    if df_daily is None or len(df_daily) < 50:
         return "NEUTRAL", 0.0
-    df_daily['EMA_20'] = df_daily['close'].ewm(span=20, adjust=False).mean()
-    df_daily['EMA_50'] = df_daily['close'].ewm(span=50, adjust=False).mean()
-    latest = df_daily.iloc[-1]
-    if latest['close'] > latest['EMA_20'] and latest['EMA_20'] > latest['EMA_50']:
-        return "BULLISH", latest['close']
-    elif latest['close'] < latest['EMA_20'] and latest['EMA_20'] < latest['EMA_50']:
-        return "BEARISH", latest['close']
-    return "CHOPPY", latest['close']
+        
+    ema_20 = df_daily['close'].ewm(span=20, adjust=False).mean()
+    ema_50 = df_daily['close'].ewm(span=50, adjust=False).mean()
+    
+    latest_close = float(df_daily['close'].iloc[-1])
+    latest_ema20 = float(ema_20.iloc[-1])
+    latest_ema50 = float(ema_50.iloc[-1])
+    
+    if latest_close > latest_ema20 and latest_ema20 > latest_ema50:
+        return "BULLISH", latest_close
+    elif latest_close < latest_ema20 and latest_ema20 < latest_ema50:
+        return "BEARISH", latest_close
+    return "CHOPPY", latest_close
 
 def check_micro_momentum(df, direction):
-    df = df.copy()
-    df['EMA_3'] = df['close'].ewm(span=3, adjust=False).mean()
-    df['EMA_8'] = df['close'].ewm(span=8, adjust=False).mean()
-    df['ROC'] = df['close'].pct_change(periods=3) * 100
+    if df is None or len(df) < 5:
+        return False
+        
+    df_m = df.copy()
+    ema_3 = df_m['close'].ewm(span=3, adjust=False).mean()
+    ema_8 = df_m['close'].ewm(span=8, adjust=False).mean()
+    roc = df_m['close'].pct_change(periods=3) * 100
 
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    latest_ema3 = ema_3.iloc[-1]
+    latest_ema8 = ema_8.iloc[-1]
+    latest_roc = roc.iloc[-1]
 
     if direction == "LONG":
-        ema_bullish = latest['EMA_3'] > latest['EMA_8'] or prev['EMA_3'] <= prev['EMA_8']
-        roc_positive = latest['ROC'] > 0
-        return ema_bullish and roc_positive
+        return (latest_ema3 > latest_ema8) and (latest_roc > 0)
     elif direction == "SHORT":
-        ema_bearish = latest['EMA_3'] < latest['EMA_8'] or prev['EMA_3'] >= prev['EMA_8']
-        roc_negative = latest['ROC'] < 0
-        return ema_bearish and roc_negative
+        return (latest_ema3 < latest_ema8) and (latest_roc < 0)
 
     return False
+
 
 # =========================================================
 # 🏛️ CORE TRADE EXECUTION LOGIC
