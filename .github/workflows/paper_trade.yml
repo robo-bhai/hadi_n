@@ -25,4 +25,5 @@ jobs:
         env:
           PASS_DB_2: ${{ secrets.PASS_DB_2 }}
           PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
+          LIVE_MON_PAPER: ${{ secrets.LIVE_MON_PAPER }}  
         run: python paper_trade.py
