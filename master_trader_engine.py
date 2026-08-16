@@ -156,7 +156,8 @@ def init_db():
             status VARCHAR(20),
             exit_reason VARCHAR(255) NULL,
             close_price DOUBLE NULL,
-            pnl DOUBLE NULL
+            pnl DOUBLE NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
         """)
 
@@ -165,6 +166,7 @@ def init_db():
             "ADD COLUMN exit_reason VARCHAR(255) NULL",
             "ADD COLUMN close_price DOUBLE NULL",
             "ADD COLUMN pnl DOUBLE NULL",
+            "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
         ]
 
         for col_statement in mysql_columns_to_add:
@@ -197,7 +199,8 @@ def init_db():
             status TEXT,
             exit_reason TEXT NULL,
             close_price REAL NULL,
-            pnl REAL NULL
+            pnl REAL NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
@@ -206,6 +209,7 @@ def init_db():
             ("exit_reason", "TEXT"),
             ("close_price", "REAL"),
             ("pnl", "REAL"),
+            ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
         ]
         for col_name, col_type in sqlite_columns:
             try:
@@ -229,6 +233,7 @@ def init_db():
 
 # Initialize DB structure on load
 init_db()
+
 
 
 # =========================================================
