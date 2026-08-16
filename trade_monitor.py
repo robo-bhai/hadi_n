@@ -117,7 +117,7 @@ def send_ntfy_notification(
       print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
   except Exception as e:
     print(f'❌ Ntfy Request Exception: {e}')
- =========================================================
+ #=========================================================
 # 📊 ACCURATE BINANCE VISION LIVE PRICE FETCH
 # =========================================================
 def fetch_live_price(symbol):
