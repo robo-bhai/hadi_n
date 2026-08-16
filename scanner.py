@@ -333,37 +333,34 @@ def check_db_trade_guard(symbol, direction=""):
 def send_pushbullet_notification(title, body):
     topic = "hadi88_quant_alerts_99"
     url = f"https://ntfy.sh/{topic}"
-    
-    clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
+
+    clean_title = title.encode("ascii", "ignore").decode("ascii").strip()
     if not clean_title:
         clean_title = "QUANT ENGINE ALERT"
-    
+
     headers = {
         "Title": clean_title,
         "Priority": "high",
         "Tags": "chart_with_upwards_trend,warning",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     }
-    
-    full_message = f"{title}\n\n{body}"
-    
+
+    # FIX: Direct 'body' bhej rahe hain taaki title notification body mein duplicate na ho
     for attempt in range(1, 4):
         try:
             response = requests.post(
-                url,
-                data=full_message.encode('utf-8'),
-                headers=headers,
-                timeout=15
+                url, data=body.encode("utf-8"), headers=headers, timeout=15
             )
             if response.status_code == 200:
-                print("🚀 Notification sent successfully!")
+                print(f"🚀 Notification sent successfully for: {clean_title}")
                 return True
         except Exception as e:
             print(f"⚠️ Ntfy Attempt {attempt} Error: {e}")
-        time.sleep(2)
-        
+        time.sleep(1)
+
     print("❌ Notification failed after 3 attempts.")
     return False
+
 
 
 def calculate_rsi(series, period=14):
@@ -815,76 +812,100 @@ def run_legendary_engine():
     # =================================================================
     # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
     # =================================================================
+    # =================================================================
+    # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
+    # =================================================================
     if pushbullet_signals:
-        alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
-        alert_body_cards = ""
         new_signals_count = 0
 
         for item in pushbullet_signals:
-            symbol = item['symbol']
+            symbol = item["symbol"]
 
             if is_trade_running_in_db(symbol):
-                print(f"⏭️ Skipping {symbol}: Active trade already exists in DB.")
+                print(
+                    f"⏭️ Skipping {symbol}: Active trade already exists in DB."
+                )
                 continue
 
             paper_saved = save_signal_to_paper_trade_db(item)
-            
+
             if paper_saved:
                 new_signals_count += 1
-                alert_body_cards += f"🪙 PAIR: {symbol}\n"
-                alert_body_cards += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
-                alert_body_cards += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
-                alert_body_cards += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
-                alert_body_cards += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
-                alert_body_cards += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
-                alert_body_cards += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
-                alert_body_cards += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
-                alert_body_cards += '📈 QUANT STATS:\n'
-                alert_body_cards += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
-                alert_body_cards += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
-                alert_body_cards += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
-                alert_body_cards += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
-                alert_body_cards += '💡 CONFLUENCES & REASONS:\n'
-                for conf in item['confluences']:
-                    alert_body_cards += f'   ✓ {conf}\n'
-                alert_body_cards += '\n----------------------------------------\n\n'
 
-        if new_signals_count > 0:
-            full_alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
-            full_alert_body += '========================================\n\n' + alert_body_cards
-            send_pushbullet_notification(alert_title, full_alert_body)
-        else:
-            print("ℹ️ All signals were already active in Paper DB. Notification skipped.")
+                # Har signal ka alag Title Header
+                single_alert_title = (
+                    f"🚨 {symbol} - {item['signal']} (Score: {item['score']})"
+                )
+
+                # Individual Card Formatting
+                card_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n"
+                card_body += "========================================\n"
+                card_body += f"🪙 PAIR: {symbol}\n"
+                card_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
+                card_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
+                card_body += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
+                card_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
+                card_body += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
+                card_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
+                card_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
+                card_body += "📈 QUANT STATS:\n"
+                card_body += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
+                card_body += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
+                card_body += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
+                card_body += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
+                card_body += "💡 CONFLUENCES & REASONS:\n"
+                for conf in item["confluences"]:
+                    card_body += f"   ✓ {conf}\n"
+
+                # Har card ke liye alag notification trigger
+                send_pushbullet_notification(single_alert_title, card_body)
+                time.sleep(1)  # API rate-limit delay
+
+        if new_signals_count == 0:
+            print(
+                "ℹ️ All signals were already active in Paper DB. Notification skipped."
+            )
     else:
-        print("ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification.")
+        print(
+            "ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification."
+        )
 
     # =================================================================
     # 🛡️ SUMMARY & LOGGING REPORTS
     # =================================================================
     if blocked_trades:
-        print('=' * 80)
-        print('🛡️ BTC / MTF GUARD BLOCKED TRADES')
-        print('=' * 80)
+        print("=" * 80)
+        print("🛡️ BTC / MTF GUARD BLOCKED TRADES")
+        print("=" * 80)
         for item in blocked_trades:
-            print(f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100")
-            print(f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n")
+            print(
+                f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100"
+            )
+            print(
+                f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n"
+            )
 
     if rejected:
-        print('=' * 80)
-        print(f'🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)')
-        print('=' * 80)
+        print("=" * 80)
+        print(
+            f"🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)"
+        )
+        print("=" * 80)
         for r in rejected[:15]:
             print(f"❌ {r['symbol']:<10} | Reason: {r['reason']}")
         if len(rejected) > 15:
-            print(f"   ... and {len(rejected) - 15} more coins rejected for safe trading.")
-        print('\n')
+            print(
+                f"   ... and {len(rejected) - 15} more coins rejected for safe trading."
+            )
+        print("\n")
 
-    print('=' * 80)
-    print('🟡 LOW CONVICTION / NEUTRAL WATCHLIST SUMMARY')
-    print('=' * 80)
+    print("=" * 80)
+    print("🟡 LOW CONVICTION / NEUTRAL WATCHLIST SUMMARY")
+    print("=" * 80)
     summary_list = [f"{i['symbol']}:{i['score']}" for i in neutral_trades]
-    print('   ' + (', '.join(summary_list) if summary_list else 'None'))
-    print('\n' + '=' * 80 + '\n')
+    print("   " + (", ".join(summary_list) if summary_list else "None"))
+    print("\n" + "=" * 80 + "\n")
+
 
     # =========================================================
     # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
