@@ -93,7 +93,7 @@ def get_ntfy_topic():
         print(
             "⚠️ LIVE_MON_TOP topic secret set nahi hai. Default fallback topic use hoga."
         )
-        return "my_trading_monitor_channel_88"
+        return "port_ff_xx_6555_bhai"
     return topic
 
 
