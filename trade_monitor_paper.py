@@ -1,17 +1,9 @@
 from datetime import datetime
 import os
-import sqlite3
 import ssl
 import pandas as pd
 import requests
-
-# Remote MySQL Support Check
-try:
-    import mysql.connector
-
-    MYSQL_AVAILABLE = True
-except ImportError:
-    MYSQL_AVAILABLE = False
+import mysql.connector
 
 # =========================================================
 # ⚙️ API ENDPOINTS & CONFIG
@@ -26,81 +18,48 @@ BINANCE_FEE_RATE = 0.00075
 
 
 # =========================================================
-# 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR
+# 🔌 MYSQL ONLY DATABASE CONNECTOR
 # =========================================================
-def init_db_tables(conn, db_type):
-    """Ensures required tables exist and initial portfolio state is set."""
+def init_db_tables(conn):
+    """Ensures required MySQL tables exist and initial portfolio state is set."""
     cursor = conn.cursor()
-    ph = "%s" if db_type == "MYSQL" else "?"
 
-    if db_type == "MYSQL":
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INT PRIMARY KEY,
-                total_capital DOUBLE DEFAULT 100.0,
-                available_capital DOUBLE DEFAULT 100.0,
-                frozen_margin DOUBLE DEFAULT 0.0
-            )
+    cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INT PRIMARY KEY,
+            total_capital DOUBLE DEFAULT 100.0,
+            available_capital DOUBLE DEFAULT 100.0,
+            frozen_margin DOUBLE DEFAULT 0.0
         )
+    """
+    )
 
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS trades (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                timestamp VARCHAR(50),
-                symbol VARCHAR(20),
-                direction VARCHAR(10),
-                entry_price DOUBLE,
-                sl_price DOUBLE,
-                tp1_price DOUBLE,
-                tp2_price DOUBLE,
-                margin_frozen DOUBLE,
-                pos_value DOUBLE,
-                leverage INT,
-                status VARCHAR(30) DEFAULT 'ACTIVE',
-                pnl DOUBLE DEFAULT 0.0
-            )
+    cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS trades (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            timestamp VARCHAR(50),
+            symbol VARCHAR(20),
+            direction VARCHAR(10),
+            entry_price DOUBLE,
+            sl_price DOUBLE,
+            tp1_price DOUBLE,
+            tp2_price DOUBLE,
+            margin_frozen DOUBLE,
+            pos_value DOUBLE,
+            leverage INT,
+            status VARCHAR(30) DEFAULT 'ACTIVE',
+            pnl DOUBLE DEFAULT 0.0
         )
-    else:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INTEGER PRIMARY KEY,
-                total_capital REAL DEFAULT 100.0,
-                available_capital REAL DEFAULT 100.0,
-                frozen_margin REAL DEFAULT 0.0
-            )
-        """
-        )
-
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                symbol TEXT,
-                direction TEXT,
-                entry_price REAL,
-                sl_price REAL,
-                tp1_price REAL,
-                tp2_price REAL,
-                margin_frozen REAL,
-                pos_value REAL,
-                leverage INTEGER,
-                status TEXT DEFAULT 'ACTIVE',
-                pnl REAL DEFAULT 0.0
-            )
-        """
-        )
+    """
+    )
 
     # Insert default portfolio row if not exists
-    cursor.execute(f"SELECT id FROM portfolio WHERE id = {ph}", (1,))
+    cursor.execute("SELECT id FROM portfolio WHERE id = %s", (1,))
     if not cursor.fetchone():
         cursor.execute(
-            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
+            "INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES (%s, 100.0, 100.0, 0.0)",
             (1,),
         )
 
@@ -108,9 +67,9 @@ def init_db_tables(conn, db_type):
 
 
 def get_db_connection():
-    """Connects to Aiven MySQL if PASS_DB_2 secret exists.
+    """Connects STRICTLY to Aiven MySQL.
 
-    Otherwise falls back to SQLite and initializes tables automatically.
+    Raises ConnectionError if connection fails.
     """
     db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
     db_user = "avnadmin"
@@ -119,48 +78,49 @@ def get_db_connection():
 
     db_pass = os.environ.get("PASS_DB_2", "").strip()
 
-    if MYSQL_AVAILABLE and db_pass:
-        # Attempt 1: Native SSL Context
-        try:
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
+    if not db_pass:
+        raise ValueError(
+            "❌ FATAL ERROR: 'PASS_DB_2' environment variable/secret missing!"
+        )
 
-            conn = mysql.connector.connect(
-                host=db_host,
-                user=db_user,
-                password=db_pass,
-                database=db_name,
-                port=db_port,
-                ssl_context=ssl_ctx,
-                connect_timeout=30,
-            )
-            init_db_tables(conn, "MYSQL")
-            return conn, "MYSQL"
-        except Exception:
-            pass
+    # Attempt 1: Native SSL Context
+    try:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
 
-        # Attempt 2: Standard SSL Fallback
-        try:
-            conn = mysql.connector.connect(
-                host=db_host,
-                user=db_user,
-                password=db_pass,
-                database=db_name,
-                port=db_port,
-                ssl_disabled=False,
-                ssl_verify_cert=False,
-                connect_timeout=30,
-            )
-            init_db_tables(conn, "MYSQL")
-            return conn, "MYSQL"
-        except Exception as e:
-            print(f"⚠️ Remote MySQL Error: {e}. Falling back to SQLite...")
+        conn = mysql.connector.connect(
+            host=db_host,
+            user=db_user,
+            password=db_pass,
+            database=db_name,
+            port=db_port,
+            ssl_context=ssl_ctx,
+            connect_timeout=30,
+        )
+        init_db_tables(conn)
+        return conn
+    except Exception as e:
+        print(f"⚠️ Native SSL Connection failed: {e}. Trying fallback SSL...")
 
-    # Fallback SQLite
-    conn = sqlite3.connect("trading_system.db")
-    init_db_tables(conn, "SQLITE")
-    return conn, "SQLITE"
+    # Attempt 2: Standard SSL Fallback
+    try:
+        conn = mysql.connector.connect(
+            host=db_host,
+            user=db_user,
+            password=db_pass,
+            database=db_name,
+            port=db_port,
+            ssl_disabled=False,
+            ssl_verify_cert=False,
+            connect_timeout=30,
+        )
+        init_db_tables(conn)
+        return conn
+    except Exception as e:
+        raise RuntimeError(
+            f"❌ FATAL ERROR: Unable to connect to MySQL Database. Error: {e}"
+        )
 
 
 # =========================================================
@@ -184,7 +144,7 @@ def send_ntfy_notification(
     topic = get_ntfy_topic()
     ntfy_url = f'https://ntfy.sh/{topic}'
 
-    # Clean Unicode emojis from Title Header to prevent latin-1 HTTP Header encoding crash
+    # Clean Unicode emojis from Title Header
     clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
     if not clean_title:
         clean_title = 'LIVE PORTFOLIO REPORT'
@@ -306,15 +266,14 @@ def fetch_full_trade_klines(symbol, start_time_ms):
 # =========================================================
 def process_active_trades():
     print('\n' + '=' * 60)
-    print('🔍 CHECKING ACTIVE TRADES IN BACKGROUND')
+    print('🔍 CHECKING ACTIVE TRADES IN BACKGROUND (MYSQL ONLY)')
     print('=' * 60)
 
-    conn, db_type = get_db_connection()
+    conn = get_db_connection()
     cursor = conn.cursor()
-    ph = '%s' if db_type == 'MYSQL' else '?'
 
     cursor.execute(
-        f'SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = {ph}',
+        'SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = %s',
         (1,),
     )
     port_row = cursor.fetchone()
@@ -325,13 +284,13 @@ def process_active_trades():
     total_cap, avail_cap, frozen_margin = port_row
 
     cursor.execute(
-        f'SELECT id, timestamp, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value FROM trades WHERE status = {ph}',
+        'SELECT id, timestamp, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value FROM trades WHERE status = %s',
         ('ACTIVE',),
     )
     active_trades = cursor.fetchall()
 
     if not active_trades:
-        print('ℹ️ No active trades currently present in the database.')
+        print('ℹ️ No active trades currently present in MySQL database.')
 
     for trade in active_trades:
         (
@@ -473,7 +432,7 @@ def process_active_trades():
             net_pnl = gross_pnl - (entry_fee + exit_fee)
 
             cursor.execute(
-                f'UPDATE trades SET status = {ph}, pnl = {ph} WHERE id = {ph}',
+                'UPDATE trades SET status = %s, pnl = %s WHERE id = %s',
                 (status, net_pnl, t_id),
             )
             frozen_margin = max(0.0, frozen_margin - margin)
@@ -481,7 +440,7 @@ def process_active_trades():
             total_cap += net_pnl
 
             cursor.execute(
-                f'UPDATE portfolio SET total_capital = {ph}, available_capital = {ph}, frozen_margin = {ph} WHERE id = 1',
+                'UPDATE portfolio SET total_capital = %s, available_capital = %s, frozen_margin = %s WHERE id = 1',
                 (total_cap, avail_cap, frozen_margin),
             )
             conn.commit()
@@ -498,7 +457,7 @@ def process_active_trades():
 def generate_and_send_report():
     process_active_trades()
 
-    conn, db_type = get_db_connection()
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # 1. Fetch Base Portfolio State
