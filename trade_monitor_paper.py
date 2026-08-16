@@ -67,14 +67,18 @@ def init_db_tables(conn):
 
 
 def get_db_connection():
-    """Connects STRICTLY to Aiven MySQL.
+    """Connects STRICTLY to Aiven MySQL using environment variables."""
+    # Environment variables se values fetch hongi, otherwise fallbacks use hongi
+    db_host = os.environ.get(
+        "MYSQL_HOST", "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
+    ).strip()
+    db_user = os.environ.get("MYSQL_USER", "avnadmin").strip()
+    db_name = os.environ.get("MYSQL_DB", "defaultdb").strip()
 
-    Raises ConnectionError if connection fails.
-    """
-    db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
-    db_user = "avnadmin"
-    db_name = "defaultdb"
-    db_port = 13722
+    try:
+        db_port = int(os.environ.get("MYSQL_PORT", 13722))
+    except ValueError:
+        db_port = 13722
 
     db_pass = os.environ.get("PASS_DB_2", "").strip()
 
@@ -121,6 +125,7 @@ def get_db_connection():
         raise RuntimeError(
             f"❌ FATAL ERROR: Unable to connect to MySQL Database. Error: {e}"
         )
+
 
 
 # =========================================================
