@@ -76,6 +76,71 @@ MAX_ACCOUNT_RISK_PCT = 0.01
 # =========================================================
 # 🔌 PAPER TRADING DATABASE ENGINE & INITIALIZER
 # =========================================================
+
+
+# =========================================================
+# 🔌 REAL TRADING DATABASE CONNECTOR & ACTIVE CHECK
+# =========================================================
+def get_real_db_connection():
+  db_host = os.environ.get(
+      'DB_HOST', 'mysql-3a3d5779-project-b71a.b.aivencloud.com'
+  )
+  db_user = os.environ.get('DB_USER', 'avnadmin')
+  db_pass = os.environ.get('DB_PASS', os.environ.get('DB_PASSWORD', ''))
+  db_name = os.environ.get('DB_NAME', 'defaultdb')
+  db_port = int(os.environ.get('DB_PORT', '23464'))
+
+  if MYSQL_AVAILABLE and db_pass:
+    try:
+      ssl_ctx = ssl.create_default_context()
+      ssl_ctx.check_hostname = False
+      ssl_ctx.verify_mode = ssl.CERT_NONE
+      conn = mysql.connector.connect(
+          host=db_host,
+          user=db_user,
+          password=db_pass,
+          database=db_name,
+          port=db_port,
+          ssl_context=ssl_ctx,
+          connect_timeout=15,
+      )
+      return conn, 'MYSQL'
+    except Exception:
+      pass
+
+  conn = sqlite3.connect('trading_system.db')
+  return conn, 'SQLITE'
+
+
+def is_trade_active_in_real_db(symbol):
+  """Real Trading DB mein Active Trade check karta hai."""
+  try:
+    conn, mode = get_real_db_connection()
+    if not conn:
+      return False
+    cursor = conn.cursor()
+    ph = '%s' if mode == 'MYSQL' else '?'
+
+    # Table 'trades' (Real DB) mein check
+    query = (
+        f"SELECT COUNT(*) FROM trades WHERE symbol = {ph} AND status = 'ACTIVE'"
+    )
+    cursor.execute(query, (symbol,))
+    row = cursor.fetchone()
+    conn.close()
+    return (row[0] > 0) if row else False
+  except Exception as e:
+    print(f'⚠️ Error checking Real DB for {symbol}: {e}')
+    return False
+
+
+def check_dual_db_status(symbol):
+  """Returns: (is_paper_active, is_real_active)"""
+  paper_active = is_trade_running_in_db(symbol)  # Paper DB Check
+  real_active = is_trade_active_in_real_db(symbol)  # Real DB Check
+  return paper_active, real_active
+
+
 def get_paper_trade_db_connection():
     db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
     db_user = "avnadmin"
@@ -873,60 +938,88 @@ def run_legendary_engine():
     # =================================================================
     # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
     # =================================================================
+    # =================================================================
+    # 🎯 SIGNAL PROCESSING & DUAL DB ROUTING BUILDER
+    # =================================================================
     if pushbullet_signals:
         new_signals_count = 0
 
         for item in pushbullet_signals:
             symbol = item["symbol"]
+            direction = item["bias"]
+            score = item["score"]
 
-            if is_trade_running_in_db(symbol):
-                print(
-                    f"⏭️ Skipping {symbol}: Active trade already exists in DB."
-                )
-                continue
+            # Dual DB Status Check
+            paper_active = is_trade_running_in_db(symbol)
+            
+            # Helper logic: Check if active on Real DB Guard
+            is_real_blocked, real_block_reason = check_db_trade_guard(symbol, direction)
+            is_real_active = is_real_blocked and ("Active trade already exists" in real_block_reason)
 
-            paper_saved = save_signal_to_paper_trade_db(item)
+            # -------------------------------------------------------------
+            # 1. PAPER TRADING DB ROUTING
+            # -------------------------------------------------------------
+            if not paper_active:
+                paper_saved = save_signal_to_paper_trade_db(item)
 
-            if paper_saved:
-                new_signals_count += 1
+                if paper_saved:
+                    new_signals_count += 1
 
-                # Har signal ka alag Title Header
-                single_alert_title = (
-                    f"🚨 {symbol} - {item['signal']} (Score: {item['score']})"
-                )
+                    # Notification Title
+                    single_alert_title = (
+                        f"🚨 {symbol} - {item['signal']} (Score: {item['score']})"
+                    )
 
-                # Individual Card Formatting
-                card_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n"
-                card_body += "========================================\n"
-                card_body += f"🪙 PAIR: {symbol}\n"
-                card_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
-                card_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
-                card_body += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
-                card_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
-                card_body += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
-                card_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
-                card_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
-                card_body += "📈 QUANT STATS:\n"
-                card_body += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
-                card_body += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
-                card_body += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
-                card_body += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
-                card_body += "💡 CONFLUENCES & REASONS:\n"
-                for conf in item["confluences"]:
-                    card_body += f"   ✓ {conf}\n"
+                    # Notification Body Formatting
+                    card_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n"
+                    card_body += "========================================\n"
+                    card_body += f"🪙 PAIR: {symbol}\n"
+                    card_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
+                    card_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
+                    card_body += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
+                    card_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
+                    card_body += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
+                    card_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
+                    card_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
+                    card_body += "📈 QUANT STATS:\n"
+                    card_body += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
+                    card_body += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
+                    card_body += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
+                    card_body += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
+                    card_body += "💡 CONFLUENCES & REASONS:\n"
+                    for conf in item["confluences"]:
+                        card_body += f"   ✓ {conf}\n"
 
-                # Har card ke liye alag notification trigger
-                send_pushbullet_notification(single_alert_title, card_body)
-                time.sleep(1)  # API rate-limit delay
+                    send_pushbullet_notification(single_alert_title, card_body)
+                    time.sleep(1)  # API rate-limit delay
+            else:
+                print(f"⏭️ [PAPER DB] Skipping {symbol}: Active trade already exists in Paper DB.")
+
+            # -------------------------------------------------------------
+            # 2. REAL TRADER ENGINE ROUTING
+            # -------------------------------------------------------------
+            if TRADER_ENGINE_AVAILABLE:
+                if not is_real_active:
+                    if is_real_blocked:
+                        print(f"🛡️ [REAL DB GUARD] Skipping Engine for {symbol}: {real_block_reason}")
+                        alert_title = f"🛡️ TRADE GUARD BLOCKED: {symbol}"
+                        alert_body = (
+                            f"⚠️ Engine execution bypassed for {symbol}.\n"
+                            f"📌 Reason: {real_block_reason}\n"
+                            f"📊 Signal Bias: {direction} | Score: {score}/100\n"
+                            f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        send_pushbullet_notification(alert_title, alert_body)
+                    else:
+                        print(f"🚀 [REAL ENGINE] Trade not active on Real DB. Executing Trader Engine for [{symbol}]...")
+                        process_trade_logic(symbol)
+                else:
+                    print(f"🛡️ [REAL DB] Skipping Engine for {symbol}: Active trade already running on Real DB.")
 
         if new_signals_count == 0:
-            print(
-                "ℹ️ All signals were already active in Paper DB. Notification skipped."
-            )
+            print("ℹ️ All signals were already active in Paper DB. Notification skipped.")
     else:
-        print(
-            "ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification."
-        )
+        print("ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification.")
 
     # =================================================================
     # 🛡️ SUMMARY & LOGGING REPORTS
@@ -936,25 +1029,17 @@ def run_legendary_engine():
         print("🛡️ BTC / MTF GUARD BLOCKED TRADES")
         print("=" * 80)
         for item in blocked_trades:
-            print(
-                f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100"
-            )
-            print(
-                f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n"
-            )
+            print(f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100")
+            print(f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n")
 
     if rejected:
         print("=" * 80)
-        print(
-            f"🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)"
-        )
+        print(f"🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)")
         print("=" * 80)
         for r in rejected[:15]:
             print(f"❌ {r['symbol']:<10} | Reason: {r['reason']}")
         if len(rejected) > 15:
-            print(
-                f"   ... and {len(rejected) - 15} more coins rejected for safe trading."
-            )
+            print(f"   ... and {len(rejected) - 15} more coins rejected for safe trading.")
         print("\n")
 
     print("=" * 80)
@@ -963,6 +1048,7 @@ def run_legendary_engine():
     summary_list = [f"{i['symbol']}:{i['score']}" for i in neutral_trades]
     print("   " + (", ".join(summary_list) if summary_list else "None"))
     print("\n" + "=" * 80 + "\n")
+
 
 
     # =========================================================
