@@ -42,9 +42,7 @@ jobs:
           echo "Waiting 5 seconds for Flask server to boot up..."
           sleep 5
 
-      - name: Create Cloudflare Tunnel & Send Link to Pushbullet
-        env:
-          PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
+      - name: Create Cloudflare Tunnel & Send Link to ntfy
         run: |
           echo "Generating Public URL via Cloudflare Tunnel..."
           
@@ -62,7 +60,6 @@ jobs:
             exit 1
           fi
 
-          # Send Notification to Pushbullet
           # Send Dashboard Link via ntfy.sh
           curl -s -X POST https://ntfy.sh/hadi88_quant_alerts_99 \
             -H "Title: 🚀 Live Crypto Dashboard Link (Cloudflare)" \
@@ -74,7 +71,6 @@ jobs:
 $TUNNEL_URL"
 
           echo "✅ ntfy alert sent successfully!"
-
 
       - name: Keep Server Running for 3 Hours
         run: |
