@@ -1,7 +1,7 @@
 name: Manual Paper Trade Monitor & Pushbullet Report
 
 on:
-  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+  workflow_dispatch:
 
 jobs:
   run-monitor:
@@ -23,13 +23,13 @@ jobs:
 
       - name: Run Paper Trade Monitor & Send Ntfy Alert
         env:
-          # MySQL Database Connection Details
-          MYSQL_HOST: "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
+          # Database Host & Port matching sqlsetup script
+          MYSQL_HOST: "mysql-3a3d5779-project-b71a.b.aivencloud.com"
           MYSQL_USER: "avnadmin"
           MYSQL_DB: "defaultdb"
-          MYSQL_PORT: "13722"
+          MYSQL_PORT: "23464"
           
-          # Secrets fetched from GitHub Secrets
+          # Secrets from GitHub
           PASS_DB_2: ${{ secrets.PASS_DB_2 }}
           LIVE_MON_PAPER: ${{ secrets.LIVE_MON_PAPER }}
         run: python trade_monitor.py

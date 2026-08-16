@@ -18,42 +18,41 @@ BINANCE_FEE_RATE = 0.00075
 
 
 # =========================================================
-# 🔌 MYSQL ONLY DATABASE CONNECTOR
+# 🔌 MYSQL ONLY DATABASE CONNECTOR & STRUCTURE
 # =========================================================
 def init_db_tables(conn):
-    """Ensures required MySQL tables exist and initial portfolio state is set."""
+    """Ensures required MySQL tables exist with the exact sqlsetup structure."""
     cursor = conn.cursor()
 
-    cursor.execute(
-        """
+    # 1. Portfolio Table Setup
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INT PRIMARY KEY,
-            total_capital DOUBLE DEFAULT 100.0,
-            available_capital DOUBLE DEFAULT 100.0,
+            total_capital DOUBLE NOT NULL,
+            available_capital DOUBLE NOT NULL,
             frozen_margin DOUBLE DEFAULT 0.0
-        )
-    """
-    )
+        );
+    """)
 
-    cursor.execute(
-        """
+    # 2. Trades Table Setup (Matches sqlsetup schema: coin_qty & TIMESTAMP)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            timestamp VARCHAR(50),
-            symbol VARCHAR(20),
-            direction VARCHAR(10),
-            entry_price DOUBLE,
-            sl_price DOUBLE,
-            tp1_price DOUBLE,
-            tp2_price DOUBLE,
-            margin_frozen DOUBLE,
-            pos_value DOUBLE,
-            leverage INT,
-            status VARCHAR(30) DEFAULT 'ACTIVE',
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            symbol VARCHAR(20) NOT NULL,
+            direction VARCHAR(10) NOT NULL,
+            entry_price DOUBLE NOT NULL,
+            sl_price DOUBLE NOT NULL,
+            tp1_price DOUBLE NOT NULL,
+            tp2_price DOUBLE NOT NULL,
+            margin_frozen DOUBLE NOT NULL,
+            pos_value DOUBLE NOT NULL,
+            coin_qty DOUBLE NOT NULL,
+            leverage INT NOT NULL,
+            status VARCHAR(20) DEFAULT 'ACTIVE',
             pnl DOUBLE DEFAULT 0.0
-        )
-    """
-    )
+        );
+    """)
 
     # Insert default portfolio row if not exists
     cursor.execute("SELECT id FROM portfolio WHERE id = %s", (1,))
@@ -68,17 +67,16 @@ def init_db_tables(conn):
 
 def get_db_connection():
     """Connects STRICTLY to Aiven MySQL using environment variables."""
-    # Environment variables se values fetch hongi, otherwise fallbacks use hongi
     db_host = os.environ.get(
-        "MYSQL_HOST", "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
+        "MYSQL_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com"
     ).strip()
     db_user = os.environ.get("MYSQL_USER", "avnadmin").strip()
     db_name = os.environ.get("MYSQL_DB", "defaultdb").strip()
 
     try:
-        db_port = int(os.environ.get("MYSQL_PORT", 13722))
+        db_port = int(os.environ.get("MYSQL_PORT", 23464))
     except ValueError:
-        db_port = 13722
+        db_port = 23464
 
     db_pass = os.environ.get("PASS_DB_2", "").strip()
 
@@ -87,7 +85,23 @@ def get_db_connection():
             "❌ FATAL ERROR: 'PASS_DB_2' environment variable/secret missing!"
         )
 
-    # Attempt 1: Native SSL Context
+    # Attempt 1: Standard SSL Connection (matching sqlsetup)
+    try:
+        conn = mysql.connector.connect(
+            host=db_host,
+            user=db_user,
+            password=db_pass,
+            database=db_name,
+            port=db_port,
+            ssl_disabled=False,
+            connect_timeout=30,
+        )
+        init_db_tables(conn)
+        return conn
+    except Exception as e:
+        print(f"⚠️ Primary SSL Connection failed: {e}. Trying native SSL Context...")
+
+    # Attempt 2: Native SSL Context Fallback
     try:
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
@@ -105,27 +119,9 @@ def get_db_connection():
         init_db_tables(conn)
         return conn
     except Exception as e:
-        print(f"⚠️ Native SSL Connection failed: {e}. Trying fallback SSL...")
-
-    # Attempt 2: Standard SSL Fallback
-    try:
-        conn = mysql.connector.connect(
-            host=db_host,
-            user=db_user,
-            password=db_pass,
-            database=db_name,
-            port=db_port,
-            ssl_disabled=False,
-            ssl_verify_cert=False,
-            connect_timeout=30,
-        )
-        init_db_tables(conn)
-        return conn
-    except Exception as e:
         raise RuntimeError(
             f"❌ FATAL ERROR: Unable to connect to MySQL Database. Error: {e}"
         )
-
 
 
 # =========================================================
@@ -313,7 +309,10 @@ def process_active_trades():
         print(f'\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]')
 
         try:
-            dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
+            if isinstance(t_time_str, datetime):
+                dt_obj = t_time_str
+            else:
+                dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
             start_ms = int(dt_obj.timestamp() * 1000)
         except Exception as e:
             print(f'❌ Timestamp Parsing Error for Trade #{t_id}: {e}')
