@@ -34,7 +34,7 @@ def init_db_tables(conn):
         );
     """)
 
-    # 2. Trades Table Setup (Matches sqlsetup schema: coin_qty & TIMESTAMP)
+    # 2. Trades Table Setup
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -66,7 +66,7 @@ def init_db_tables(conn):
 
 
 def get_db_connection():
-    """Connects STRICTLY to Aiven MySQL using environment variables."""
+    """Connects STRICTLY to Aiven MySQL using Environment Variables & Proper SSL Config."""
     db_host = os.environ.get(
         "MYSQL_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com"
     ).strip()
@@ -99,21 +99,18 @@ def get_db_connection():
         init_db_tables(conn)
         return conn
     except Exception as e:
-        print(f"⚠️ Primary SSL Connection failed: {e}. Trying native SSL Context...")
+        print(f"⚠️ Primary SSL Connection failed: {e}. Trying secondary SSL mode...")
 
-    # Attempt 2: Native SSL Context Fallback
+    # Attempt 2: Flexible SSL Mode Fallback
     try:
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-
         conn = mysql.connector.connect(
             host=db_host,
             user=db_user,
             password=db_pass,
             database=db_name,
             port=db_port,
-            ssl_context=ssl_ctx,
+            ssl_disabled=False,
+            ssl_verify_cert=False,
             connect_timeout=30,
         )
         init_db_tables(conn)
