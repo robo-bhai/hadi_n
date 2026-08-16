@@ -28,7 +28,8 @@ jobs:
 
       - name: Run Market Scanner Script
         env:
-          PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
+          NTFY_FOR_SCANNER: ${{ secrets.NTFY_FOR_SCANNER }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_TRADER_ENGINE }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT }}
           DB_USER: ${{ secrets.DB_USER }}

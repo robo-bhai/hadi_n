@@ -28,24 +28,42 @@ BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
 # =========================================================
 def send_pushbullet_notification(title, body):
     """
-    Sends Pushbullet notification for trade execution, skipped setups, or rejections.
+    Sends ntfy.sh notification for trade execution, skipped setups, or rejections.
+    Strictly loads topic from GitHub Secrets / Environment Variables.
     """
-    api_token = os.environ.get('PUSHBULLET_TOKEN')
-    if not api_token:
-        print('⚠️ PUSHBULLET_TOKEN is not set in environment variables.')
+    topic = os.environ.get("NTFY_TOPIC_TRADER_ENGINE")
+    if not topic:
+        print("⚠️ NTFY_TOPIC environment variable / secret is not set.")
         return
 
-    url = 'https://api.pushbullet.com/v2/pushes'
-    headers = {'Access-Token': api_token, 'Content-Type': 'application/json'}
-    payload = {'type': 'note', 'title': title, 'body': body}
+    url = f"https://ntfy.sh/{topic}"
+
+    # Clean title to prevent ASCII encoding issues with header text
+    clean_title = title.encode("ascii", "ignore").decode("ascii").strip()
+    if not clean_title:
+        clean_title = "QUANT ENGINE ALERT"
+
+    headers = {
+        "Title": clean_title,
+        "Priority": "high",
+        "Tags": "chart_with_upwards_trend,warning",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    }
+
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        res = requests.post(
+            url, data=body.encode("utf-8"), headers=headers, timeout=10
+        )
         if res.status_code == 200:
-            print('🚀 Pushbullet notification sent successfully!')
+            print(f"🚀 ntfy notification sent successfully for: {clean_title}")
         else:
-            print(f'❌ Failed to send Pushbullet notification: Status {res.status_code} - {res.text}')
+            print(
+                f"❌ Failed to send ntfy notification: Status {res.status_code} - {res.text}"
+            )
     except Exception as e:
-        print(f'❌ Pushbullet API Request Error: {e}')
+        print(f"❌ ntfy API Request Error: {e}")
+
+
 
 # =========================================================
 # 🔌 DATABASE CONNECTION ENGINE (MYSQL + SQLITE FALLBACK)
@@ -105,13 +123,14 @@ def get_db_connection():
 def init_db():
     """
     Ensures required tables (portfolio, trades) exist in MySQL/SQLite.
+    Handles dynamic column migrations for existing MySQL production databases.
     """
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
-    
+
     ph = "%s" if db_type == "MYSQL" else "?"
 
-    # Create Portfolio Table
+    # Create Portfolio & Trades Tables
     if db_type == "MYSQL":
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
@@ -134,9 +153,25 @@ def init_db():
             pos_value DOUBLE,
             coin_qty DOUBLE,
             leverage INT,
-            status VARCHAR(20)
+            status VARCHAR(20),
+            exit_reason VARCHAR(255) NULL,
+            close_price DOUBLE NULL,
+            pnl DOUBLE NULL
         )
         """)
+
+        # 🛠️ Safe Migration: Existing MySQL Table Par Columns Add Karna
+        mysql_columns_to_add = [
+            "ADD COLUMN exit_reason VARCHAR(255) NULL",
+            "ADD COLUMN close_price DOUBLE NULL",
+            "ADD COLUMN pnl DOUBLE NULL",
+        ]
+
+        for col_statement in mysql_columns_to_add:
+            try:
+                cursor.execute(f"ALTER TABLE trades {col_statement}")
+            except Exception:
+                pass  # Column pehle se majood hone par error skip karega
     else:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
@@ -159,20 +194,42 @@ def init_db():
             pos_value REAL,
             coin_qty REAL,
             leverage INTEGER,
-            status TEXT
+            status TEXT,
+            exit_reason TEXT NULL,
+            close_price REAL NULL,
+            pnl REAL NULL
         )
         """)
+
+        # 🛠️ Safe Migration: SQLite Fallback DB Ke Liye
+        sqlite_columns = [
+            ("exit_reason", "TEXT"),
+            ("close_price", "REAL"),
+            ("pnl", "REAL"),
+        ]
+        for col_name, col_type in sqlite_columns:
+            try:
+                cursor.execute(
+                    f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"
+                )
+            except Exception:
+                pass
 
     # Check Portfolio Record 1
     cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
     if cursor.fetchone()[0] == 0:
-        cursor.execute(f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)", (1,))
+        cursor.execute(
+            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
+            (1,),
+        )
 
     conn.commit()
     conn.close()
 
+
 # Initialize DB structure on load
 init_db()
+
 
 # =========================================================
 # 📊 DATABASE QUERIES & PORTFOLIO STATE

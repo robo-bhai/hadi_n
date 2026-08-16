@@ -331,7 +331,15 @@ def check_db_trade_guard(symbol, direction=""):
 # 📲 NOTIFICATIONS & INDICATORS
 # =========================================================
 def send_pushbullet_notification(title, body):
-    topic = "hadi88_quant_alerts_99"
+    """
+    Sends ntfy.sh notification using the NTFY_FOR_SCANNER environment variable / secret.
+    Retries up to 3 times on failure.
+    """
+    topic = os.environ.get("NTFY_FOR_SCANNER")
+    if not topic:
+        print("⚠️ NTFY_FOR_SCANNER environment variable / secret is not set.")
+        return False
+
     url = f"https://ntfy.sh/{topic}"
 
     clean_title = title.encode("ascii", "ignore").decode("ascii").strip()
@@ -345,7 +353,6 @@ def send_pushbullet_notification(title, body):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     }
 
-    # FIX: Direct 'body' bhej rahe hain taaki title notification body mein duplicate na ho
     for attempt in range(1, 4):
         try:
             response = requests.post(
@@ -360,6 +367,7 @@ def send_pushbullet_notification(title, body):
 
     print("❌ Notification failed after 3 attempts.")
     return False
+
 
 
 
