@@ -544,9 +544,10 @@ def process_active_trades():
 
 
 # =========================================================
-# 📄 EXPERT PDF REPORT GENERATOR (REPORTLAB + EXCEL GRAPH STYLES)
 # =========================================================
-def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
+# 📄 EXPERT PDF REPORT GENERATOR (FIXED TUPLE UNPACKING)
+# =========================================================
+def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
   conn, db_type = get_db_connection()
   cursor = conn.cursor()
 
@@ -669,7 +670,7 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
       )
   )
 
-  # 1. Executive Summary Table (Excel Grid Format)
+  # 1. Executive Summary Table
   story.append(Paragraph('📊 EXECUTIVE PORTFOLIO SUMMARY', sec_heading))
 
   summary_data = [
@@ -742,9 +743,8 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
     ]
     active_grid = [[Paragraph(h, cell_bold) for h in active_headers]]
 
-    total_floating_pnl = 0.0
-
     for r in active_trades:
+      # ✅ EXACT 13 VALUES UNPACKED HERE
       (
           t_id,
           t_time,
@@ -758,6 +758,7 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
           pos_val,
           lev,
           status,
+          pnl_val,
       ) = r
       live_p = fetch_live_price(symbol) or entry_p
 
@@ -767,8 +768,6 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
         float_pnl = pos_val * ((entry_p - live_p) / entry_p)
 
       float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
-      total_floating_pnl += float_pnl
-
       p_color = '#16A34A' if float_pnl >= 0 else '#DC2626'
 
       row = [
@@ -813,7 +812,8 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
   )
 
   if active_trades:
-    for index, r in enumerate(active_trades[:4]):  # Render top active charts
+    for index, r in enumerate(active_trades[:4]):
+      # ✅ EXACT 13 VALUES UNPACKED HERE
       (
           t_id,
           t_time_str,
@@ -827,6 +827,7 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
           pos_val,
           lev,
           status,
+          pnl_val,
       ) = r
       try:
         dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
@@ -875,7 +876,8 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
     ]
     closed_grid = [[Paragraph(h, cell_bold) for h in closed_headers]]
 
-    for r in closed_trades[:15]:  # Display recent 15
+    for r in closed_trades[:15]:
+      # ✅ EXACT 13 VALUES UNPACKED HERE
       (
           t_id,
           t_time,
@@ -927,6 +929,7 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
   doc.build(story)
   print(f'✅ Professional PDF Report successfully generated: {pdf_filename}')
   return pdf_filename
+
 
 
 # =========================================================
