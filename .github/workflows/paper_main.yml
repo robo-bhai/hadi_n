@@ -32,4 +32,4 @@ jobs:
           # Secrets from GitHub
           PASS_DB_2: ${{ secrets.PASS_DB_2 }}
           LIVE_MON_PAPER: ${{ secrets.LIVE_MON_PAPER }}
-        run: python trade_monitor.py
+        run: python trade_monitor_paper.py
