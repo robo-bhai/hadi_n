@@ -81,12 +81,12 @@ def get_db_connection():
 
 
 # =========================================================
-# 📲 NOTIFICATION ENGINE (NTFY.SH INTEGRATION - FIXED)
+# 📲 NOTIFICATION ENGINE (NTFY.SH INTEGRATION - RICH UI & LATIN-1 SAFE)
 # =========================================================
 def send_ntfy_notification(
     title, body, tags='chart_with_upwards_trend,bar_chart'
 ):
-  """Sends professional Markdown-formatted notifications via ntfy.sh using
+  """Sends professional, rich Markdown-formatted notifications via ntfy.sh using
 
   LIVE_MON_PAPER GitHub secret as the Topic Name.
   Header titles are kept in clean ASCII to avoid latin-1 encoding errors.
@@ -445,20 +445,21 @@ def process_active_trades():
         )
 
       event_title = f'TRADE CLOSED: {symbol} [{status}]'
+      pnl_icon = '🎉' if net_pnl > 0 else '🛑'
 
-      event_body = f'### 🚨 Closed Trade Details (#{t_id})\n'
-      event_body += f'* **Symbol:** `{symbol}` ({direction})\n'
-      event_body += f'* **Exit Reason:** `{status}`\n'
-      event_body += f'* **Entry Price:** `${fmt_p(entry_p)}`\n'
-      event_body += (
-          f'* **Margin / Pos:** `${margin:.2f}` / `${pos_val:.2f}` USDT\n'
-      )
-      event_body += f'* **Gross PnL:** `${gross_pnl:+.2f}` USDT\n'
-      event_body += f'* **Net PnL (Fees Incl):** **`${net_pnl:+.2f}` USDT**\n\n'
+      event_body = f'## {pnl_icon} TRADE CLOSED: `{symbol}`\n'
+      event_body += '```\n'
+      event_body += f'Reason     : {status}\n'
+      event_body += f'Direction  : {direction}\n'
+      event_body += f'Entry Price: ${fmt_p(entry_p)}\n'
+      event_body += f'Margin     : ${margin:.2f} USDT\n'
+      event_body += f'Gross PnL  : ${gross_pnl:+.2f} USDT\n'
+      event_body += f'Net PnL    : ${net_pnl:+.2f} USDT\n'
+      event_body += '```\n\n'
 
-      event_body += '---\n### 📊 Updated Portfolio Summary\n'
+      event_body += '### 📊 UPDATED PORTFOLIO SUMMARY\n'
       event_body += f'* **Total Capital:** `${total_cap:.2f}` USDT\n'
-      event_body += f'* **Available Balance:** `${avail_cap:.2f}` USDT\n'
+      event_body += f'* **Available Bal:** `${avail_cap:.2f}` USDT\n'
       event_body += f'* **Frozen Margin:** `${frozen_margin:.2f}` USDT\n'
       event_body += (
           f'* **Win Rate / ROI:** `{win_rate:.1f}%` | **`{total_roi:+.2f}%`**\n\n'
@@ -495,19 +496,12 @@ def process_active_trades():
           float_pnl_pct = (
               (float_pnl / act_margin) * 100 if act_margin > 0 else 0.0
           )
+          pnl_badge = '🟢' if float_pnl >= 0 else '🔴'
 
-          event_body += f'* **`{act_symbol}`** ({act_dir} {act_lev}x)\n'
-          event_body += (
-              f'  * Entry: `${fmt_p(act_entry)}` | Live: `${fmt_p(live_p)}`\n'
-          )
-          event_body += (
-              f'  * SL: `${fmt_p(act_sl)}` | TP1: `${fmt_p(act_tp1)}` | TP2:'
-              f' `${fmt_p(act_tp2)}`\n'
-          )
-          event_body += (
-              f'  * Floating PnL: **`${float_pnl:+.2f}`'
-              f' ({float_pnl_pct:+.2f}%)**\n\n'
-          )
+          event_body += f'{pnl_badge} **`{act_symbol}`** | `{act_dir}` `{act_lev}x`\n'
+          event_body += f'> ▫️ **Margin:** `${act_margin:.2f}` USDT | **Pos:** `${act_pos:.2f}`\n'
+          event_body += f'> ▫️ **Entry:** `${fmt_p(act_entry)}` ➔ **Live:** `${fmt_p(live_p)}`\n'
+          event_body += f'> ▫️ **PnL:** **`{float_pnl:+.2f} USDT`** (`{float_pnl_pct:+.2f}%`)\n\n'
 
       print(
           '   🚀 ntfy alert sent with full portfolio & running positions'
@@ -526,7 +520,7 @@ def process_active_trades():
 
 
 # =========================================================
-# 📋 GENERATE & PRINT CLEAN CONSOLE & NTFY REPORT
+# 📋 RICH UI REPORT GENERATOR & NTFY SENDER
 # =========================================================
 def generate_and_send_report():
   process_active_trades()
@@ -541,14 +535,15 @@ def generate_and_send_report():
   port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
   total_capital, avail_capital, frozen_margin = port_row
 
-  cursor.execute('SELECT status, pnl FROM trades')
+  cursor.execute('SELECT status, pnl, symbol, direction FROM trades')
   all_trades = cursor.fetchall()
 
+  closed_trades_list = []
   closed_count = 0
   win_count = 0
   total_realized_pnl = 0.0
 
-  for status, pnl in all_trades:
+  for status, pnl, sym, r_dir in all_trades:
     pnl_val = pnl if pnl is not None else 0.0
     if status in [
         'CLOSED_TP1',
@@ -561,6 +556,7 @@ def generate_and_send_report():
       total_realized_pnl += pnl_val
       if pnl_val > 0:
         win_count += 1
+      closed_trades_list.append((sym, r_dir, status, pnl_val))
 
   win_rate = (win_count / closed_count * 100) if closed_count > 0 else 0.0
   initial_capital = max(1.0, total_capital - total_realized_pnl)
@@ -581,19 +577,13 @@ def generate_and_send_report():
         else f'{p:.2f}' if p else '0.00'
     )
 
-  report_title = f'Portfolio Status & Running Positions ({len(running_trades)})'
+  # ---------------------------------------------------------
+  # CALCULATE LIVE FLOATING PNL FOR ACTIVE POSITIONS
+  # ---------------------------------------------------------
+  total_live_floating_pnl = 0.0
+  active_cards_body = ''
 
-  report_body = '### ⚡ Portfolio Overview\n'
-  report_body += f'* **Total Capital:** `${total_capital:.2f}` USDT\n'
-  report_body += f'* **Available Balance:** `${avail_capital:.2f}` USDT\n'
-  report_body += f'* **Freezed Balance:** `${frozen_margin:.2f}` USDT\n'
-  report_body += f'* **Overall Win Rate:** `{win_rate:.1f}%`\n'
-  report_body += f'* **Total ROI:** **`{total_roi:+.2f}%`**\n\n'
-
-  if not running_trades:
-    report_body += '> ℹ️ *Currently no active running trades.*'
-  else:
-    report_body += '---\n### 🟢 Running Positions\n'
+  if running_trades:
     for r in running_trades:
       (
           t_id,
@@ -618,21 +608,58 @@ def generate_and_send_report():
         float_pnl = pos_val * ((entry_p - live_p) / entry_p)
 
       float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
+      total_live_floating_pnl += float_pnl
 
-      report_body += f'* **`{symbol}`** ({direction} {lev}x)\n'
-      report_body += (
-          f'  * Margin: `${margin:.2f}` | Pos Value: `${pos_val:.2f}` USDT\n'
+      pnl_badge = '🟢' if float_pnl >= 0 else '🔴'
+
+      active_cards_body += (
+          f'{pnl_badge} **`{symbol}`** | `{direction}` `{lev}x`\n'
       )
-      report_body += (
-          f'  * Entry: `${fmt_p(entry_p)}` | Live: `${fmt_p(live_p)}`\n'
+      active_cards_body += (
+          f'> ▫️ **Margin:** `${margin:.2f}` USDT | **Pos:** `${pos_val:.2f}`\n'
       )
-      report_body += (
-          f'  * Target: SL `${fmt_p(sl_p)}` | TP1 `${fmt_p(tp1_p)}` | TP2'
-          f' `${fmt_p(tp2_p)}`\n'
+      active_cards_body += (
+          f'> ▫️ **Entry:** `${fmt_p(entry_p)}` ➔ **Live:** `${fmt_p(live_p)}`\n'
       )
+      active_cards_body += (
+          f'> ▫️ **PnL:** **`{float_pnl:+.2f} USDT`** (`{float_pnl_pct:+.2f}%`)\n'
+      )
+      active_cards_body += (
+          f'> ▫️ `SL: ${fmt_p(sl_p)}` | `TP1: ${fmt_p(tp1_p)}` | `TP2:'
+          f' ${fmt_p(tp2_p)}`\n\n'
+      )
+
+  report_title = f'PORTFOLIO DASHBOARD ({len(running_trades)} ACTIVE)'
+
+  # ---------------------------------------------------------
+  # RICH MARKDOWN NOTIFICATION BODY
+  # ---------------------------------------------------------
+  report_body = '## 📊 PORTFOLIO DASHBOARD\n'
+  report_body += '```\n'
+  report_body += f'Total Capital : ${total_capital:.2f} USDT\n'
+  report_body += f'Avail Balance : ${avail_capital:.2f} USDT\n'
+  report_body += f'Frozen Margin : ${frozen_margin:.2f} USDT\n'
+  report_body += f'Live Float PnL: ${total_live_floating_pnl:+.2f} USDT\n'
+  report_body += f'Win Rate / ROI: {win_rate:.1f}% | {total_roi:+.2f}%\n'
+  report_body += '```\n\n'
+
+  # ACTIVE TRADES SECTION
+  report_body += f'### ⚡ ACTIVE POSITIONS ({len(running_trades)})\n'
+  if not running_trades:
+    report_body += '> ℹ️ *No active running trades at the moment.*\n\n'
+  else:
+    report_body += active_cards_body
+
+  # CLOSED TRADES SECTION
+  report_body += f'### 📑 RECENT CLOSED TRADES ({len(closed_trades_list)})\n'
+  if not closed_trades_list:
+    report_body += '> ℹ️ *No closed trades history available.*\n'
+  else:
+    for c_sym, c_dir, c_status, c_pnl in closed_trades_list[-5:]:
+      c_badge = '✅' if c_pnl > 0 else '❌'
       report_body += (
-          f'  * Floating PnL: **`${float_pnl:+.2f}`'
-          f' ({float_pnl_pct:+.2f}%)**\n\n'
+          f'* {c_badge} **`{c_sym}`** ({c_dir}) ➔ `{c_status}` | PnL:'
+          f' **`${c_pnl:+.2f}`**\n'
       )
 
   print('\n' + '=' * 60)
@@ -641,9 +668,9 @@ def generate_and_send_report():
   print(report_body)
   print('=' * 60)
 
-  # Send via ntfy.sh using LIVE_MON_PAPER secret topic
+  # Send Notification
   send_ntfy_notification(
-      report_title, report_body, tags='chart_with_upwards_trend,bar_chart'
+      report_title, report_body, tags='chart_with_upwards_trend,moneybag'
   )
 
 
