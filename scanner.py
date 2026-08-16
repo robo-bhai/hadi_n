@@ -306,7 +306,7 @@ def save_signal_to_paper_trade_db(trade):
 
 
 def check_db_trade_guard(symbol, direction=""):
-    conn, mode = get_db_connection()
+    conn, mode = get_paper_trade_db_connection()
     if not conn:
         print(f"⚠️ DB Guard Warning: Database connection unavailable. Skipping DB check for {symbol}.")
         return False, ""
@@ -314,11 +314,12 @@ def check_db_trade_guard(symbol, direction=""):
     try:
         cursor = conn.cursor(dictionary=True) if mode == "MYSQL" else conn.cursor()
 
+        # 1. Active trade check (paper_trades table)
         query_active = """
-            SELECT id, direction, entry_price FROM trades 
+            SELECT id, direction, entry_price FROM paper_trades 
             WHERE symbol = %s AND status = 'ACTIVE'
         """ if mode == "MYSQL" else """
-            SELECT id, direction, entry_price FROM trades 
+            SELECT id, direction, entry_price FROM paper_trades 
             WHERE symbol = ? AND status = 'ACTIVE'
         """
         
@@ -327,19 +328,21 @@ def check_db_trade_guard(symbol, direction=""):
 
         if active_trade:
             active_dir = active_trade['direction'] if isinstance(active_trade, dict) else active_trade[1]
+            cursor.close()
             conn.close()
             reason = f"Active trade already exists on {symbol} (Direction: {active_dir})."
             return True, reason
 
+        # 2. 24-Hour Stop-Loss Cooldown Check
         query_sl = """
-            SELECT id, exit_reason, updated_at FROM trades 
+            SELECT id, exit_reason, updated_at FROM paper_trades 
             WHERE symbol = %s 
               AND status = 'CLOSED' 
               AND (exit_reason LIKE '%SL%' OR exit_reason LIKE '%STOP_LOSS%')
               AND updated_at >= NOW() - INTERVAL 24 HOUR
             ORDER BY updated_at DESC LIMIT 1
         """ if mode == "MYSQL" else """
-            SELECT id, exit_reason, updated_at FROM trades 
+            SELECT id, exit_reason, updated_at FROM paper_trades 
             WHERE symbol = ? 
               AND status = 'CLOSED' 
               AND (exit_reason LIKE '%SL%' OR exit_reason LIKE '%STOP_LOSS%')
@@ -347,14 +350,20 @@ def check_db_trade_guard(symbol, direction=""):
             ORDER BY updated_at DESC LIMIT 1
         """
         
-        cursor.execute(query_sl, (symbol,))
-        sl_trade = cursor.fetchone()
+        try:
+            cursor.execute(query_sl, (symbol,))
+            sl_trade = cursor.fetchone()
+            if sl_trade:
+                cursor.close()
+                conn.close()
+                reason = f"Trade on {symbol} hit Stop Loss in the last 24 hours."
+                return True, reason
+        except Exception as sl_err:
+            # Table schema mein exit_reason/updated_at na hone par silent fallback
+            pass
+
+        cursor.close()
         conn.close()
-
-        if sl_trade:
-            reason = f"Trade on {symbol} hit Stop Loss in the last 24 hours."
-            return True, reason
-
         return False, ""
 
     except Exception as e:
@@ -365,6 +374,7 @@ def check_db_trade_guard(symbol, direction=""):
             except Exception:
                 pass
         return False, ""
+
 
 
 # =========================================================
