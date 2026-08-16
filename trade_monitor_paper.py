@@ -5,9 +5,10 @@ import ssl
 import pandas as pd
 import requests
 
-# Mysql connector safety check
+# Remote MySQL Support Check
 try:
     import mysql.connector
+
     MYSQL_AVAILABLE = True
 except ImportError:
     MYSQL_AVAILABLE = False
@@ -25,26 +26,18 @@ BINANCE_FEE_RATE = 0.00075
 
 
 # =========================================================
-# 🔌 DATABASE CONNECTOR WITH SSL & SQLITE FALLBACK
+# 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR
 # =========================================================
 def get_db_connection():
-    """Connects to MySQL with SSL Fallback or defaults to Local SQLite."""
     db_host = os.environ.get(
-        "MYSQL_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com"
-    ).strip()
-    db_user = os.environ.get("MYSQL_USER", "avnadmin").strip()
-    db_name = os.environ.get("MYSQL_DB", "defaultdb").strip()
+        'mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com'
+    )
+    db_user = os.environ.get('DB_USER', 'avnadmin')
+    db_pass = os.environ.get('PASS_DB_2', os.environ.get('DB_PASSWORD', ''))
+    db_name = os.environ.get('DB_NAME', 'defaultdb')
+    db_port = int(os.environ.get('DB_PORT', '13722'))
 
-    try:
-        db_port = int(os.environ.get("MYSQL_PORT", 23464))
-    except ValueError:
-        db_port = 23464
-
-    db_pass = os.environ.get("PASS_DB_2", "").strip()
-
-    # Attempt MySQL connection if driver is available and password exists
     if MYSQL_AVAILABLE and db_pass:
-        # Attempt 1: Native SSL Context
         try:
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
@@ -59,12 +52,10 @@ def get_db_connection():
                 ssl_context=ssl_ctx,
                 connect_timeout=30,
             )
-            init_db_tables(conn, 'MYSQL')
             return conn, 'MYSQL'
         except Exception:
             pass
 
-        # Attempt 2: Standard SSL Fallback
         try:
             conn = mysql.connector.connect(
                 host=db_host,
@@ -76,134 +67,58 @@ def get_db_connection():
                 ssl_verify_cert=False,
                 connect_timeout=30,
             )
-            init_db_tables(conn, 'MYSQL')
             return conn, 'MYSQL'
         except Exception as e:
             print(f'⚠️ Remote MySQL Error: {e}. Falling back to SQLite...')
 
-    # Fallback to SQLite Database
     conn = sqlite3.connect('trading_system.db')
-    init_db_tables(conn, 'SQLITE')
     return conn, 'SQLITE'
 
 
-def init_db_tables(conn, db_type):
-    """Ensures required tables exist according to DB engine (MySQL vs SQLite)."""
-    cursor = conn.cursor()
-
-    if db_type == 'MYSQL':
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INT PRIMARY KEY,
-                total_capital DOUBLE NOT NULL,
-                available_capital DOUBLE NOT NULL,
-                frozen_margin DOUBLE DEFAULT 0.0
-            );
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                symbol VARCHAR(20) NOT NULL,
-                direction VARCHAR(10) NOT NULL,
-                entry_price DOUBLE NOT NULL,
-                sl_price DOUBLE NOT NULL,
-                tp1_price DOUBLE NOT NULL,
-                tp2_price DOUBLE NOT NULL,
-                margin_frozen DOUBLE NOT NULL,
-                pos_value DOUBLE NOT NULL,
-                coin_qty DOUBLE NOT NULL,
-                leverage INT NOT NULL,
-                status VARCHAR(20) DEFAULT 'ACTIVE',
-                pnl DOUBLE DEFAULT 0.0
-            );
-        """)
-        placeholder = "%s"
-    else:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INTEGER PRIMARY KEY,
-                total_capital REAL NOT NULL,
-                available_capital REAL NOT NULL,
-                frozen_margin REAL DEFAULT 0.0
-            );
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                symbol TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                entry_price REAL NOT NULL,
-                sl_price REAL NOT NULL,
-                tp1_price REAL NOT NULL,
-                tp2_price REAL NOT NULL,
-                margin_frozen REAL NOT NULL,
-                pos_value REAL NOT NULL,
-                coin_qty REAL NOT NULL,
-                leverage INTEGER NOT NULL,
-                status TEXT DEFAULT 'ACTIVE',
-                pnl REAL DEFAULT 0.0
-            );
-        """)
-        placeholder = "?"
-
-    # Insert default portfolio row if missing
-    cursor.execute(f"SELECT id FROM portfolio WHERE id = {placeholder}", (1,))
-    if not cursor.fetchone():
-        cursor.execute(
-            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({placeholder}, 100.0, 100.0, 0.0)",
-            (1,),
-        )
-
-    conn.commit()
-
-
 # =========================================================
-# 📲 NTFY NOTIFICATION ENGINE
+# 📲 NTFY NOTIFICATION ENGINE (TOPIC FROM GITHUB / ENV)
 # =========================================================
 def get_ntfy_topic():
-    """Fetch live topic from Environment Variable or use fallback."""
-    topic = os.getenv('LIVE_MON_PAPER', '').strip()
+    """Environment variables (GitHub Secrets) se LIVE_MON_TOP topic fetch karta hai."""
+    topic = os.getenv('LIVE_MON_TOP', '').strip()
     if not topic:
         print(
-            "⚠️ LIVE_MON_PAPER topic secret set nahi hai. Default fallback topic use hoga."
+            "⚠️ LIVE_MON_TOP topic secret set nahi hai. Default fallback topic use hoga."
         )
-        return "port_ff_xx_6555_bhai"
+        return "my_trading_monitor_channel_88"
     return topic
 
 
 def send_ntfy_notification(
     title, message_body, tags=['chart_with_upwards_trend', 'moneybag']
 ):
-    """Clean Unicode emojis and send Push notification via ntfy."""
-    topic = get_ntfy_topic()
-    ntfy_url = f'https://ntfy.sh/{topic}'
+  """Ntfy server ko clean Markdown/Text format mein notification bhejta hai."""
+  topic = get_ntfy_topic()
+  ntfy_url = f'https://ntfy.sh/{topic}'
 
-    clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
-    if not clean_title:
-        clean_title = 'LIVE PORTFOLIO REPORT'
+  # Clean Unicode emojis from Title Header to prevent latin-1 HTTP Header encoding crash
+  clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
+  if not clean_title:
+    clean_title = 'LIVE PORTFOLIO REPORT'
 
-    headers = {
-        'Title': clean_title,
-        'Priority': 'default',
-        'Tags': ','.join(tags),
-    }
+  headers = {
+      'Title': clean_title,
+      'Priority': 'default',
+      'Tags': ','.join(tags),
+  }
 
-    try:
-        res = requests.post(
-            ntfy_url, data=message_body.encode('utf-8'), headers=headers, timeout=10
-        )
-        if res.status_code == 200:
-            print(f'🚀 Ntfy notification successfully sent to topic: {topic}')
-        else:
-            print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
-    except Exception as e:
-        print(f'❌ Ntfy Request Exception: {e}')
-
-
-# =========================================================
-# 📊 ACCURATE BINANCE LIVE PRICE FETCH
+  try:
+    res = requests.post(
+        ntfy_url, data=message_body.encode('utf-8'), headers=headers, timeout=10
+    )
+    if res.status_code == 200:
+      print(f'🚀 Ntfy notification successfully sent to topic: {topic}')
+    else:
+      print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
+  except Exception as e:
+    print(f'❌ Ntfy Request Exception: {e}')
+ #=========================================================
+# 📊 ACCURATE BINANCE VISION LIVE PRICE FETCH
 # =========================================================
 def fetch_live_price(symbol):
     if not symbol:
@@ -242,7 +157,7 @@ def fetch_live_price(symbol):
 
 
 # =========================================================
-# 🕯️ DOWNLOAD 1m CANDLES
+# 🕯️ DOWNLOAD 1m CANDLES FROM TRADE START TIME TO NOW
 # =========================================================
 def fetch_full_trade_klines(symbol, start_time_ms):
     clean_symbol = str(symbol).strip().upper()
@@ -300,17 +215,16 @@ def fetch_full_trade_klines(symbol, start_time_ms):
 # 🔄 PROCESS ACTIVE TRADES
 # =========================================================
 def process_active_trades():
-    conn, db_type = get_db_connection()
-    placeholder = "%s" if db_type == 'MYSQL' else "?"
-
     print('\n' + '=' * 60)
-    print(f'🔍 CHECKING ACTIVE TRADES IN BACKGROUND ({db_type} MODE)')
+    print('🔍 CHECKING ACTIVE TRADES IN BACKGROUND')
     print('=' * 60)
 
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
+    ph = '%s' if db_type == 'MYSQL' else '?'
 
     cursor.execute(
-        f'SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = {placeholder}',
+        f'SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = {ph}',
         (1,),
     )
     port_row = cursor.fetchone()
@@ -321,13 +235,13 @@ def process_active_trades():
     total_cap, avail_cap, frozen_margin = port_row
 
     cursor.execute(
-        f'SELECT id, timestamp, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value FROM trades WHERE status = {placeholder}',
+        f'SELECT id, timestamp, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value FROM trades WHERE status = {ph}',
         ('ACTIVE',),
     )
     active_trades = cursor.fetchall()
 
     if not active_trades:
-        print(f'ℹ️ No active trades currently present in {db_type} database.')
+        print('ℹ️ No active trades currently present in the database.')
 
     for trade in active_trades:
         (
@@ -345,10 +259,7 @@ def process_active_trades():
         print(f'\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]')
 
         try:
-            if isinstance(t_time_str, datetime):
-                dt_obj = t_time_str
-            else:
-                dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
+            dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
             start_ms = int(dt_obj.timestamp() * 1000)
         except Exception as e:
             print(f'❌ Timestamp Parsing Error for Trade #{t_id}: {e}')
@@ -472,7 +383,7 @@ def process_active_trades():
             net_pnl = gross_pnl - (entry_fee + exit_fee)
 
             cursor.execute(
-                f'UPDATE trades SET status = {placeholder}, pnl = {placeholder} WHERE id = {placeholder}',
+                f'UPDATE trades SET status = {ph}, pnl = {ph} WHERE id = {ph}',
                 (status, net_pnl, t_id),
             )
             frozen_margin = max(0.0, frozen_margin - margin)
@@ -480,7 +391,7 @@ def process_active_trades():
             total_cap += net_pnl
 
             cursor.execute(
-                f'UPDATE portfolio SET total_capital = {placeholder}, available_capital = {placeholder}, frozen_margin = {placeholder} WHERE id = 1',
+                f'UPDATE portfolio SET total_capital = {ph}, available_capital = {ph}, frozen_margin = {ph} WHERE id = 1',
                 (total_cap, avail_cap, frozen_margin),
             )
             conn.commit()
@@ -492,27 +403,24 @@ def process_active_trades():
 
 
 # =========================================================
-# 📋 GENERATE & SEND NTFY REPORT
+# 📋 GENERATE & SEND CLEAN NTFY NOTIFICATION REPORT
 # =========================================================
 def generate_and_send_report():
     process_active_trades()
 
     conn, db_type = get_db_connection()
-    placeholder = "%s" if db_type == 'MYSQL' else "?"
     cursor = conn.cursor()
 
     # 1. Fetch Base Portfolio State
     cursor.execute(
-        f'SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = {placeholder}',
-        (1,),
+        'SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = 1'
     )
     port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
     base_total_capital, avail_capital, frozen_margin = port_row
 
-    # 2. Fetch Active Trades
+    # 2. Fetch Active Trades & Calculate Live Floating PnL
     cursor.execute(
-        f"SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value, leverage, status FROM trades WHERE status = {placeholder} ORDER BY id DESC",
-        ('ACTIVE',),
+        "SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value, leverage, status FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC"
     )
     running_trades = cursor.fetchall()
 
@@ -566,13 +474,11 @@ def generate_and_send_report():
             'float_pnl_pct': float_pnl_pct,
         })
 
+    # Total Balance including Live PnL
     live_total_balance = base_total_capital + total_floating_pnl
 
     # 3. Fetch Closed Trades Metrics
-    cursor.execute(
-        f"SELECT status, pnl FROM trades WHERE status != {placeholder}",
-        ('ACTIVE',),
-    )
+    cursor.execute("SELECT status, pnl FROM trades WHERE status != 'ACTIVE'")
     closed_trades = cursor.fetchall()
 
     closed_count = len(closed_trades)
@@ -582,10 +488,12 @@ def generate_and_send_report():
 
     conn.close()
 
-    # Build Message Header & Content
+    # =========================================================
+    # 📱 BUILD CLEAN & RESPONSIVE NTFY FORMATTED MESSAGE
+    # =========================================================
     pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
-    msg = f'📊 PORTFOLIO BREAKDOWN ({db_type})\n'
+    msg = '📊 PORTFOLIO BREAKDOWN\n'
     msg += '───────────────────────────\n'
     msg += f'💎 Total Balance : ${live_total_balance:.2f} USDT (Live)\n'
     msg += f'💵 Base Capital  : ${base_total_capital:.2f} USDT\n'
@@ -616,6 +524,7 @@ def generate_and_send_report():
             msg += f"• Live PnL  : {pnl_icon} ${pos['float_pnl']:+.2f} ({pos['float_pnl_pct']:+.2f}%)\n"
             msg += '-------------------------------------------\n'
 
+    # Title & Triggering Send
     report_title = f'⚡ Live Portfolio Report ({len(active_positions_details)} Active Trades)'
     send_ntfy_notification(report_title, msg)
 
