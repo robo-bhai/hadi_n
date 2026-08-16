@@ -1,4 +1,4 @@
-name: Manual Trade Monitor & Pushbullet Report
+name: Manual Trade Monitor & Ntfy Report
 
 on:
   workflow_dispatch: # Allows manual trigger from GitHub UI anytime
@@ -21,12 +21,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests pandas mysql-connector-python
 
-      - name: Run Trade Monitor & Send Pushbullet Alert
+      - name: Run Trade Monitor & Send Ntfy Alert
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
-          PUSHBULLET_TOKEN: ${{ secrets.PUSHBULLET_TOKEN }}
+          LIVE_MON_TOP: ${{ secrets.LIVE_MON_TOP }}
         run: python trade_monitor.py
