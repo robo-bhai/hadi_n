@@ -81,12 +81,15 @@ def get_db_connection():
 
 
 # =========================================================
-# 📲 NOTIFICATION ENGINE (NTFY.SH INTEGRATION)
+# 📲 NOTIFICATION ENGINE (NTFY.SH INTEGRATION - FIXED)
 # =========================================================
-def send_ntfy_notification(title, body, tags='chart_with_upwards_trend'):
+def send_ntfy_notification(
+    title, body, tags='chart_with_upwards_trend,bar_chart'
+):
   """Sends professional Markdown-formatted notifications via ntfy.sh using
 
   LIVE_MON_PAPER GitHub secret as the Topic Name.
+  Header titles are kept in clean ASCII to avoid latin-1 encoding errors.
   """
   topic_name = os.getenv('LIVE_MON_PAPER', '').strip()
   if not topic_name:
@@ -98,14 +101,18 @@ def send_ntfy_notification(title, body, tags='chart_with_upwards_trend'):
 
   url = f'https://ntfy.sh/{topic_name}'
 
+  # Clean non-ASCII characters from title to prevent Header latin-1 encoding error
+  clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
+
   headers = {
-      'Title': title,
+      'Title': clean_title if clean_title else 'Portfolio Update',
       'Priority': 'high',
       'Tags': tags,
       'Markdown': 'yes',  # Enables Responsive Markdown Formatting
   }
 
   try:
+    # Body fully supports UTF-8 Unicode / Emojis
     res = requests.post(
         url, data=body.encode('utf-8'), headers=headers, timeout=10
     )
@@ -437,9 +444,9 @@ def process_active_trades():
             else f'{p:.2f}' if p else '0.00'
         )
 
-      event_title = f'🚨 TRADE CLOSED: {symbol} [{status}]'
+      event_title = f'TRADE CLOSED: {symbol} [{status}]'
 
-      event_body = f'### 📑 Closed Trade Details (#{t_id})\n'
+      event_body = f'### 🚨 Closed Trade Details (#{t_id})\n'
       event_body += f'* **Symbol:** `{symbol}` ({direction})\n'
       event_body += f'* **Exit Reason:** `{status}`\n'
       event_body += f'* **Entry Price:** `${fmt_p(entry_p)}`\n'
@@ -574,9 +581,9 @@ def generate_and_send_report():
         else f'{p:.2f}' if p else '0.00'
     )
 
-  report_title = f'⚡ Portfolio Status & Running Positions ({len(running_trades)})'
+  report_title = f'Portfolio Status & Running Positions ({len(running_trades)})'
 
-  report_body = '### 💰 Portfolio Overview\n'
+  report_body = '### ⚡ Portfolio Overview\n'
   report_body += f'* **Total Capital:** `${total_capital:.2f}` USDT\n'
   report_body += f'* **Available Balance:** `${avail_capital:.2f}` USDT\n'
   report_body += f'* **Freezed Balance:** `${frozen_margin:.2f}` USDT\n'
