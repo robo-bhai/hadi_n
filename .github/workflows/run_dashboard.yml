@@ -61,7 +61,7 @@ jobs:
           fi
 
           # Send Dashboard Link via ntfy.sh (Clean One-line Data Format)
-          curl -s -X POST https://ntfy.sh/hadi88_quant_alerts_99 \
+          curl -s -X POST https://ntfy.sh/lev_nasiiar_link_988 \
             -H "Title: 🚀 Live Crypto Dashboard Link (Cloudflare)" \
             -H "Click: $TUNNEL_URL" \
             -H "Priority: high" \
