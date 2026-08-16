@@ -73,6 +73,9 @@ MAX_ACCOUNT_RISK_PCT = 0.01
 # =========================================================
 # 🔌 PAPER TRADING DATABASE ENGINE & SAVER
 # =========================================================
+# =========================================================
+# 🔌 PAPER TRADING DATABASE ENGINE & INITIALIZER
+# =========================================================
 def get_paper_trade_db_connection():
     db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
     db_user = "avnadmin"
@@ -93,7 +96,7 @@ def get_paper_trade_db_connection():
                 database=db_name,
                 port=db_port,
                 ssl_context=ssl_ctx,
-                connect_timeout=30
+                connect_timeout=30,
             )
             return conn, "MYSQL"
         except Exception:
@@ -108,58 +111,95 @@ def get_paper_trade_db_connection():
                 port=db_port,
                 ssl_disabled=False,
                 ssl_verify_cert=False,
-                connect_timeout=30
+                connect_timeout=30,
             )
             return conn, "MYSQL"
         except Exception as e:
-            print(f"⚠️ Paper MySQL Connection Error: {e}. Falling back to SQLite...")
+            print(
+                f"⚠️ Paper MySQL Connection Error: {e}. Falling back to SQLite..."
+            )
 
     conn = sqlite3.connect("paper_trading_system.db")
     return conn, "SQLITE"
 
 
-def get_db_connection():
-    db_host = os.getenv("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
-    db_user = os.getenv("DB_USER", "avnadmin")
-    db_pass = os.getenv("DB_PASS", os.getenv("DB_PASSWORD", ""))
-    db_name = os.getenv("DB_NAME", "defaultdb")
-    db_port = int(os.getenv("DB_PORT", 23464))
+def init_paper_db():
+    """Script startup par hi paper_trades table create karne ki guarantee deta hai."""
+    conn, mode = get_paper_trade_db_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        create_tbl = (
+            """
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20) NOT NULL,
+            direction VARCHAR(10) NOT NULL,
+            entry_price DECIMAL(18,8),
+            stop_loss DECIMAL(18,8),
+            target_1 DECIMAL(18,8),
+            target_2 DECIMAL(18,8),
+            score INT,
+            leverage INT,
+            margin_usdt DECIMAL(10,2),
+            status VARCHAR(20) DEFAULT 'ACTIVE',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+            if mode == "MYSQL"
+            else """
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry_price REAL,
+            stop_loss REAL,
+            target_1 REAL,
+            target_2 REAL,
+            score INTEGER,
+            leverage INTEGER,
+            margin_usdt REAL,
+            status TEXT DEFAULT 'ACTIVE',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        )
+        cursor.execute(create_tbl)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"⚠️ Error initializing Paper DB table: {e}")
+        if conn:
+            conn.close()
 
-    if MYSQL_AVAILABLE and db_pass:
-        try:
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
 
-            conn = mysql.connector.connect(
-                host=db_host,
-                port=db_port,
-                user=db_user,
-                password=db_pass,
-                database=db_name,
-                ssl_context=ssl_ctx,
-                connect_timeout=30
-            )
-            return conn, "MYSQL"
-        except Exception:
-            pass
+# Database table ko import/execution ke waqt auto-create karna
+init_paper_db()
 
-        try:
-            conn = mysql.connector.connect(
-                host=db_host,
-                port=db_port,
-                user=db_user,
-                password=db_pass,
-                database=db_name,
-                ssl_disabled=False,
-                ssl_verify_cert=False,
-                connect_timeout=30
-            )
-            return conn, "MYSQL"
-        except Exception as e:
-            print(f"⚠️ Remote MySQL Connection Error: {e}")
 
-    return None, "NONE"
+def is_trade_running_in_db(symbol):
+    try:
+        conn, mode = get_paper_trade_db_connection()
+        if not conn:
+            return False
+        cursor = conn.cursor()
+
+        # Extra safety check: agar table abhi bhi create na hui ho
+        init_paper_db()
+
+        ph = "%s" if mode == "MYSQL" else "?"
+        query = f"SELECT COUNT(*) FROM paper_trades WHERE symbol = {ph} AND status = {ph}"
+        cursor.execute(query, (symbol, "ACTIVE"))
+
+        row = cursor.fetchone()
+        conn.close()
+
+        return (row[0] > 0) if row else False
+    except Exception as e:
+        print(f"⚠️ Error checking DB for {symbol}: {e}")
+        return False
+
 
 
 def is_trade_running_in_db(symbol):
