@@ -89,30 +89,35 @@ def get_ntfy_topic():
     return topic
 
 
-def send_ntfy_notification(title, message_body, tags=['chart_with_upwards_trend', 'moneybag']):
-    """Ntfy server ko clean Markdown/Text format mein notification bhejta hai."""
-    topic = get_ntfy_topic()
-    ntfy_url = f'https://ntfy.sh/{topic}'
+def send_ntfy_notification(
+    title, message_body, tags=['chart_with_upwards_trend', 'moneybag']
+):
+  """Ntfy server ko clean Markdown/Text format mein notification bhejta hai."""
+  topic = get_ntfy_topic()
+  ntfy_url = f'https://ntfy.sh/{topic}'
 
-    headers = {
-        'Title': title,
-        'Priority': 'default',
-        'Tags': ','.join(tags),
-    }
+  # Clean Unicode emojis from Title Header to prevent latin-1 HTTP Header encoding crash
+  clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
+  if not clean_title:
+    clean_title = 'LIVE PORTFOLIO REPORT'
 
-    try:
-        res = requests.post(
-            ntfy_url, data=message_body.encode('utf-8'), headers=headers, timeout=10
-        )
-        if res.status_code == 200:
-            print(f'🚀 Ntfy notification successfully sent to topic: {topic}')
-        else:
-            print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
-    except Exception as e:
-        print(f'❌ Ntfy Request Exception: {e}')
+  headers = {
+      'Title': clean_title,
+      'Priority': 'default',
+      'Tags': ','.join(tags),
+  }
 
-
-# =========================================================
+  try:
+    res = requests.post(
+        ntfy_url, data=message_body.encode('utf-8'), headers=headers, timeout=10
+    )
+    if res.status_code == 200:
+      print(f'🚀 Ntfy notification successfully sent to topic: {topic}')
+    else:
+      print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
+  except Exception as e:
+    print(f'❌ Ntfy Request Exception: {e}')
+ =========================================================
 # 📊 ACCURATE BINANCE VISION LIVE PRICE FETCH
 # =========================================================
 def fetch_live_price(symbol):
