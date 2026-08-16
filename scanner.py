@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import requests
 import ssl
+import sqlite3
 
 # Conditional MySQL Connector (Remote / GitHub Secrets)
 try:
@@ -27,14 +28,14 @@ PAIRS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT',
     'LINKUSDT', 'NEARUSDT', 'APTUSDT', 'DOTUSDT', 'LTCUSDT', 'SUIUSDT', 'TRXUSDT',
     'XLMUSDT', 'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'ATOMUSDT', 'ICPUSDT', 'HBARUSDT',
-    'STXUSDT', 'SEIUSDT', 'TIAUSDT', 'FTMUSDT', 'SUIUSDT', 'INJUSDT', 'EGLDUSDT',
+    'STXUSDT', 'SEIUSDT', 'TIAUSDT', 'FTMUSDT', 'INJUSDT', 'EGLDUSDT',
     'THETAUSDT', 'ROSEUSDT', 'ALGOUSDT', 'FLOWUSDT', 'NEOUSDT', 'EOSUSDT', 'IOTAUSDT',
     'XTZUSDT', 'ZILUSDT', 'KSMUSDT', 'POLUSDT', 'ARBUSDT', 'OPUSDT', 'STRKUSDT',
     'ZKUSDT', 'MANTAUSDT', 'DYMUSDT', 'ALTUSDT', 'SAGAUSDT', 'BBUSDT',
 
     # --- AI & Big Data ---
     'TAOUSDT', 'FETUSDT', 'RENDERUSDT', 'ARKMUSDT', 'WLDUSDT', 'GRTUSDT', 'JASMYUSDT',
-    'IOUSDT', 'NEARUSDT', 'AKTUSDT',
+    'IOUSDT', 'AKTUSDT',
 
     # --- Memes (High Liquidity) ---
     'DOGEUSDT', 'SHIBUSDT', 'PEPEUSDT', 'FLOKIUSDT', 'BONKUSDT', 'WIFUSDT',
@@ -54,11 +55,7 @@ PAIRS = [
     'TONUSDT', 'NOTUSDT', 'DOGSUSDT', 'KASUSDT', 'EIGENUSDT', 'RAYUSDT'
 ]
 
-# Duplicate remove karne aur list clean rakhne ke liye:
 PAIRS = list(dict.fromkeys(PAIRS))
-
-
-#PAIRS = list(dict.fromkeys(PAIRS))
 
 # =========================================================
 # ⚙️ CONFIGURATION & PUBLIC ENDPOINTS
@@ -74,25 +71,13 @@ MARGIN_ALLOC_PCT = 0.13
 MAX_ACCOUNT_RISK_PCT = 0.01
 
 # =========================================================
-# 🔌 RESPONSIVE MYSQL & DATABASE CONNECTION ENGINE
-# =========================================================
-
-import sqlite3
-
-# =========================================================
 # 🔌 PAPER TRADING DATABASE ENGINE & SAVER
 # =========================================================
 def get_paper_trade_db_connection():
-    """
-    Connects to Aiven MySQL for Paper Trading DB using PASS_DB_2 secret.
-    Falls back to local SQLite if MySQL is unavailable.
-    """
     db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
     db_user = "avnadmin"
     db_name = "defaultdb"
     db_port = 13722
-
-    # Secret key read from environment
     db_pass = os.environ.get("PASS_DB_2", "").strip()
 
     if MYSQL_AVAILABLE and db_pass:
@@ -129,16 +114,75 @@ def get_paper_trade_db_connection():
         except Exception as e:
             print(f"⚠️ Paper MySQL Connection Error: {e}. Falling back to SQLite...")
 
-    # Fallback to local SQLite
     conn = sqlite3.connect("paper_trading_system.db")
     return conn, "SQLITE"
 
 
+def get_db_connection():
+    db_host = os.getenv("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
+    db_user = os.getenv("DB_USER", "avnadmin")
+    db_pass = os.getenv("DB_PASS", os.getenv("DB_PASSWORD", ""))
+    db_name = os.getenv("DB_NAME", "defaultdb")
+    db_port = int(os.getenv("DB_PORT", 23464))
+
+    if MYSQL_AVAILABLE and db_pass:
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+
+            conn = mysql.connector.connect(
+                host=db_host,
+                port=db_port,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                ssl_context=ssl_ctx,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception:
+            pass
+
+        try:
+            conn = mysql.connector.connect(
+                host=db_host,
+                port=db_port,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                ssl_disabled=False,
+                ssl_verify_cert=False,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception as e:
+            print(f"⚠️ Remote MySQL Connection Error: {e}")
+
+    return None, "NONE"
+
+
+def is_trade_running_in_db(symbol):
+    try:
+        conn, mode = get_paper_trade_db_connection()
+        if not conn:
+            return False
+        cursor = conn.cursor()
+        ph = "%s" if mode == "MYSQL" else "?"
+        
+        query = f"SELECT COUNT(*) FROM paper_trades WHERE symbol = {ph} AND status = {ph}"
+        cursor.execute(query, (symbol, 'ACTIVE'))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        return (row[0] > 0) if row else False
+    except Exception as e:
+        print(f"⚠️ Error checking DB for {symbol}: {e}")
+        return False
+
+
 def save_signal_to_paper_trade_db(trade):
-    """
-    Saves high conviction signal to Paper Trade DB.
-    Returns True if a NEW record was saved, False if it was already active.
-    """
     conn, mode = get_paper_trade_db_connection()
     if not conn:
         print(f"❌ [PAPER DB] Connection failed for {trade['symbol']}")
@@ -150,7 +194,6 @@ def save_signal_to_paper_trade_db(trade):
     try:
         cursor = conn.cursor(dictionary=True) if mode == "MYSQL" else conn.cursor()
 
-        # Table schema setup
         create_tbl = """
         CREATE TABLE IF NOT EXISTS paper_trades (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -184,7 +227,6 @@ def save_signal_to_paper_trade_db(trade):
         """
         cursor.execute(create_tbl)
 
-        # 1. Duplicate check within Paper DB
         chk_query = (
             "SELECT id FROM paper_trades WHERE symbol = %s AND status = 'ACTIVE'"
             if mode == "MYSQL"
@@ -196,7 +238,6 @@ def save_signal_to_paper_trade_db(trade):
             conn.close()
             return False
 
-        # 2. Insert new signal into Paper DB
         insert_query = """
         INSERT INTO paper_trades 
         (symbol, direction, entry_price, stop_loss, target_1, target_2, score, leverage, margin_usdt, status)
@@ -224,71 +265,7 @@ def save_signal_to_paper_trade_db(trade):
         return False
 
 
-
-def get_db_connection():
-    """
-    Connects to Remote MySQL (Aiven/GitHub Secrets) with Responsive Multi-Engine SSL.
-    Falls back gracefully if variables are not provided or fails.
-    """
-    db_host = os.getenv("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
-    db_user = os.getenv("DB_USER", "avnadmin")
-    db_pass = os.getenv("DB_PASS", os.getenv("DB_PASSWORD", ""))
-    db_name = os.getenv("DB_NAME", "defaultdb")
-    db_port = int(os.getenv("DB_PORT", 23464))
-
-    if MYSQL_AVAILABLE and db_pass:
-        # Attempt 1: Native SSL Context (Fixes Termux & Python 3.12 SSL Handshake Timeout)
-        try:
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-
-            conn = mysql.connector.connect(
-                host=db_host,
-                port=db_port,
-                user=db_user,
-                password=db_pass,
-                database=db_name,
-                ssl_context=ssl_ctx,
-                connect_timeout=30
-            )
-            return conn, "MYSQL"
-        except Exception:
-            pass
-
-        # Attempt 2: Standard Connector SSL Parameters (Fallback)
-        try:
-            conn = mysql.connector.connect(
-                host=db_host,
-                port=db_port,
-                user=db_user,
-                password=db_pass,
-                database=db_name,
-                ssl_disabled=False,
-                ssl_verify_cert=False,
-                connect_timeout=30
-            )
-            return conn, "MYSQL"
-        except Exception as e:
-            print(f"⚠️ Remote MySQL Connection Error: {e}")
-
-    return None, "NONE"
-
-
-# =========================================================
-# 🛡️ LIVE DATABASE TRADE & SL GUARD CHECKER
-# =========================================================
-
-# =========================================================
-# 🛡️ LIVE DATABASE TRADE & SL GUARD CHECKER
-# =========================================================
 def check_db_trade_guard(symbol, direction=""):
-    """
-    Checks Live Database for:
-    1. Active Trade on the same symbol.
-    2. Trade closed via Stop Loss (SL) in the last 24 hours.
-    Returns: (is_blocked: bool, reason: str)
-    """
     conn, mode = get_db_connection()
     if not conn:
         print(f"⚠️ DB Guard Warning: Database connection unavailable. Skipping DB check for {symbol}.")
@@ -297,7 +274,6 @@ def check_db_trade_guard(symbol, direction=""):
     try:
         cursor = conn.cursor(dictionary=True) if mode == "MYSQL" else conn.cursor()
 
-        # 1. Active Trade Check (Same Symbol)
         query_active = """
             SELECT id, direction, entry_price FROM trades 
             WHERE symbol = %s AND status = 'ACTIVE'
@@ -315,7 +291,6 @@ def check_db_trade_guard(symbol, direction=""):
             reason = f"Active trade already exists on {symbol} (Direction: {active_dir})."
             return True, reason
 
-        # 2. Last 24 Hours SL Hit Check (MySQL & SQLite Compatible)
         query_sl = """
             SELECT id, exit_reason, updated_at FROM trades 
             WHERE symbol = %s 
@@ -334,7 +309,6 @@ def check_db_trade_guard(symbol, direction=""):
         
         cursor.execute(query_sl, (symbol,))
         sl_trade = cursor.fetchone()
-
         conn.close()
 
         if sl_trade:
@@ -356,24 +330,13 @@ def check_db_trade_guard(symbol, direction=""):
 # =========================================================
 # 📲 NOTIFICATIONS & INDICATORS
 # =========================================================
-import time
-import requests
-
-import time
-import requests
-
 def send_pushbullet_notification(title, body):
-    """
-    Replaced Pushbullet with ntfy.sh for unlimited free alerts.
-    Fixed Encoding Issue: Clean title headers for latin-1 compatibility.
-    """
     topic = "hadi88_quant_alerts_99"
     url = f"https://ntfy.sh/{topic}"
     
-    # Header se non-ASCII emojis remove karne ke liye safe title
     clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
     if not clean_title:
-        clean_title = "BINANCE QUANT ALERT"
+        clean_title = "QUANT ENGINE ALERT"
     
     headers = {
         "Title": clean_title,
@@ -382,7 +345,6 @@ def send_pushbullet_notification(title, body):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     
-    # Message Body (Supports full Unicode & Emojis via utf-8)
     full_message = f"{title}\n\n{body}"
     
     for attempt in range(1, 4):
@@ -394,19 +356,14 @@ def send_pushbullet_notification(title, body):
                 timeout=15
             )
             if response.status_code == 200:
-                print("🚀 Ntfy notification sent successfully!")
+                print("🚀 Notification sent successfully!")
                 return True
-            else:
-                print(f"⚠️ Ntfy Attempt {attempt} failed: Status {response.status_code} - {response.text}")
         except Exception as e:
-            print(f"⚠️ Ntfy Attempt {attempt} Network Error: {e}")
-        
+            print(f"⚠️ Ntfy Attempt {attempt} Error: {e}")
         time.sleep(2)
         
-    print("❌ All Ntfy retries exhausted.")
+    print("❌ Notification failed after 3 attempts.")
     return False
-
-
 
 
 def calculate_rsi(series, period=14):
@@ -425,10 +382,6 @@ def calculate_atr(df, period=14):
     return tr.rolling(window=period).mean()
 
 def calculate_adx(df, period=14):
-    """
-    Quant-Grade Directional Movement Index (ADX) 
-    Fixes typo bug and implements TradingView precision smoothings.
-    """
     try:
         df_calc = df.copy()
         high = df_calc['high']
@@ -437,13 +390,11 @@ def calculate_adx(df, period=14):
         up_move = high - high.shift(1)
         down_move = low.shift(1) - low
         
-        # Up/Down Directional Movement vectors
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
         
         atr = calculate_atr(df_calc, period).replace(0, 1e-9)
         
-        # Exponential Smoothing (Wilder's Alpha = 1 / period)
         plus_di = 100 * (pd.Series(plus_dm, index=df_calc.index).ewm(alpha=1/period, adjust=False).mean() / atr)
         minus_di = 100 * (pd.Series(minus_dm, index=df_calc.index).ewm(alpha=1/period, adjust=False).mean() / atr)
         
@@ -849,53 +800,67 @@ def run_legendary_engine():
     else:
         print('   (Koi high-probability safe trade spot nahi hui. Capital preserve karein!)\n')
 
-    # Fix: LONG trades ke liye High Score, SHORT trades ke liye Low Score check karein
     if btc_regime == 'CHOPPY':
         min_long_score = 75
         max_short_score = 25
     else:
-        # Default / Normal Market Limits
-        min_long_score = 65  # Ya Testing ke liye 20 rakh sakte hain
-        max_short_score = 35 # Ya Testing ke liye 35/40 rakh sakte hain
+        min_long_score = 65
+        max_short_score = 35
 
     pushbullet_signals = [
         r for r in high_conviction 
         if r['score'] >= min_long_score or r['score'] <= max_short_score
     ]
 
-    # ONLY SEND PUSHBULLET NOTIFICATION WHEN VALID SIGNALS ARE GENERATED
+    # =================================================================
+    # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
+    # =================================================================
     if pushbullet_signals:
         alert_title = f'🚨 BINANCE HIGH SCORE ALERT ({len(pushbullet_signals)} Signal Found)'
-        alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
-        alert_body += '========================================\n\n'
+        alert_body_cards = ""
+        new_signals_count = 0
 
         for item in pushbullet_signals:
-            # Save signal to Paper DB
-            save_signal_to_paper_trade_db(item)
+            symbol = item['symbol']
 
-            # Build Pushbullet Notification Body
-            alert_body += f"🪙 PAIR: {item['symbol']}\n"
-            alert_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
-            alert_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
-            alert_body += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
-            alert_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
-            alert_body += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
-            alert_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
-            alert_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
-            alert_body += '📈 QUANT STATS:\n'
-            alert_body += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
-            alert_body += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
-            alert_body += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
-            alert_body += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
-            alert_body += '💡 CONFLUENCES & REASONS:\n'
-            for conf in item['confluences']:
-                alert_body += f'   ✓ {conf}\n'
-            alert_body += '\n----------------------------------------\n\n'
+            if is_trade_running_in_db(symbol):
+                print(f"⏭️ Skipping {symbol}: Active trade already exists in DB.")
+                continue
 
-        send_pushbullet_notification(alert_title, alert_body)
+            paper_saved = save_signal_to_paper_trade_db(item)
+            
+            if paper_saved:
+                new_signals_count += 1
+                alert_body_cards += f"🪙 PAIR: {symbol}\n"
+                alert_body_cards += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
+                alert_body_cards += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
+                alert_body_cards += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
+                alert_body_cards += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
+                alert_body_cards += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
+                alert_body_cards += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
+                alert_body_cards += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
+                alert_body_cards += '📈 QUANT STATS:\n'
+                alert_body_cards += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
+                alert_body_cards += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
+                alert_body_cards += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
+                alert_body_cards += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
+                alert_body_cards += '💡 CONFLUENCES & REASONS:\n'
+                for conf in item['confluences']:
+                    alert_body_cards += f'   ✓ {conf}\n'
+                alert_body_cards += '\n----------------------------------------\n\n'
+
+        if new_signals_count > 0:
+            full_alert_body = f'🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n'
+            full_alert_body += '========================================\n\n' + alert_body_cards
+            send_pushbullet_notification(alert_title, full_alert_body)
+        else:
+            print("ℹ️ All signals were already active in Paper DB. Notification skipped.")
     else:
         print("ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification.")
 
+    # =================================================================
+    # 🛡️ SUMMARY & LOGGING REPORTS
+    # =================================================================
     if blocked_trades:
         print('=' * 80)
         print('🛡️ BTC / MTF GUARD BLOCKED TRADES')
@@ -921,21 +886,8 @@ def run_legendary_engine():
     print('   ' + (', '.join(summary_list) if summary_list else 'None'))
     print('\n' + '=' * 80 + '\n')
 
-
     # =========================================================
     # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
-    # =========================================================
-# =========================================================
-# 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
-# =========================================================
-# =========================================================
-# 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
-# =========================================================
-    # =========================================================
-    # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
-    # =========================================================
-    # =========================================================
-    # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER (WITH LIVE DB GUARD)
     # =========================================================
     if TRADER_ENGINE_AVAILABLE and pushbullet_signals:
         print(f"\n🤖 [AUTOMATION BRIDGE] Found {len(pushbullet_signals)} high conviction signal(s). Checking DB Guard...")
@@ -946,14 +898,11 @@ def run_legendary_engine():
             score = trade['score']
             direction = trade['bias']
             
-            # 1. Check Live MySQL Database for Active Trade / 24h SL Hit
             is_blocked, block_reason = check_db_trade_guard(symbol, direction)
 
             if is_blocked:
-                # A. Console Log
                 print(f"🛡️ [DB GUARD BLOCKED] Skipping Engine for {symbol}: {block_reason}")
                 
-                # B. Responsive Pushbullet Alert
                 alert_title = f"🛡️ TRADE GUARD BLOCKED: {symbol}"
                 alert_body = (
                     f"⚠️ Engine execution bypassed for {symbol}.\n"
@@ -962,11 +911,8 @@ def run_legendary_engine():
                     f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 send_pushbullet_notification(alert_title, alert_body)
-                
-                # Bypass trader engine execution for this coin
                 continue
 
-            # 2. Execute trade using master trader engine logic if passed DB Guard
             print(f"🚀 Triggering Trader Engine for [{symbol}] (Score: {score})...")
             result = process_trade_logic(symbol)
             executed_trades.append({"symbol": symbol, "score": score, "result": result})
