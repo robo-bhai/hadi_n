@@ -1,4 +1,4 @@
-name: Manual Trade Monitor & Ntfy Report
+name: Manual Trade Monitor & Pushbullet Report
 
 on:
   workflow_dispatch: # Allows manual trigger from GitHub UI anytime
