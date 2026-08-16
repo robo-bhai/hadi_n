@@ -28,18 +28,95 @@ BINANCE_FEE_RATE = 0.00075
 # =========================================================
 # 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR
 # =========================================================
-def get_db_connection():
-    """Hardcoded Aiven MySQL Connector with PASS_DB_2 Secret integration.
+def init_db_tables(conn, db_type):
+    """Ensures required tables exist and initial portfolio state is set."""
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "MYSQL" else "?"
 
-    Fallback to SQLite if MySQL connection fails or password missing.
+    if db_type == "MYSQL":
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INT PRIMARY KEY,
+                total_capital DOUBLE DEFAULT 100.0,
+                available_capital DOUBLE DEFAULT 100.0,
+                frozen_margin DOUBLE DEFAULT 0.0
+            )
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trades (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                timestamp VARCHAR(50),
+                symbol VARCHAR(20),
+                direction VARCHAR(10),
+                entry_price DOUBLE,
+                sl_price DOUBLE,
+                tp1_price DOUBLE,
+                tp2_price DOUBLE,
+                margin_frozen DOUBLE,
+                pos_value DOUBLE,
+                leverage INT,
+                status VARCHAR(30) DEFAULT 'ACTIVE',
+                pnl DOUBLE DEFAULT 0.0
+            )
+        """
+        )
+    else:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY,
+                total_capital REAL DEFAULT 100.0,
+                available_capital REAL DEFAULT 100.0,
+                frozen_margin REAL DEFAULT 0.0
+            )
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                symbol TEXT,
+                direction TEXT,
+                entry_price REAL,
+                sl_price REAL,
+                tp1_price REAL,
+                tp2_price REAL,
+                margin_frozen REAL,
+                pos_value REAL,
+                leverage INTEGER,
+                status TEXT DEFAULT 'ACTIVE',
+                pnl REAL DEFAULT 0.0
+            )
+        """
+        )
+
+    # Insert default portfolio row if not exists
+    cursor.execute(f"SELECT id FROM portfolio WHERE id = {ph}", (1,))
+    if not cursor.fetchone():
+        cursor.execute(
+            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
+            (1,),
+        )
+
+    conn.commit()
+
+
+def get_db_connection():
+    """Connects to Aiven MySQL if PASS_DB_2 secret exists.
+
+    Otherwise falls back to SQLite and initializes tables automatically.
     """
-    # Hardcoded Credentials
     db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
     db_user = "avnadmin"
     db_name = "defaultdb"
     db_port = 13722
 
-    # Password read from GitHub Secrets: PASS_DB_2
     db_pass = os.environ.get("PASS_DB_2", "").strip()
 
     if MYSQL_AVAILABLE and db_pass:
@@ -58,6 +135,7 @@ def get_db_connection():
                 ssl_context=ssl_ctx,
                 connect_timeout=30,
             )
+            init_db_tables(conn, "MYSQL")
             return conn, "MYSQL"
         except Exception:
             pass
@@ -74,12 +152,14 @@ def get_db_connection():
                 ssl_verify_cert=False,
                 connect_timeout=30,
             )
+            init_db_tables(conn, "MYSQL")
             return conn, "MYSQL"
         except Exception as e:
             print(f"⚠️ Remote MySQL Error: {e}. Falling back to SQLite...")
 
     # Fallback SQLite
     conn = sqlite3.connect("trading_system.db")
+    init_db_tables(conn, "SQLITE")
     return conn, "SQLITE"
 
 
