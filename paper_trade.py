@@ -748,7 +748,7 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
           margin,
           pos_val,
           lev,
-          status,,
+          status,
       ) = r
       live_p = fetch_live_price(symbol) or entry_p
 
@@ -817,7 +817,7 @@ def build_expert_pdf_report(pdf_filename='Trading_Expert_Report.pdf'):
           margin,
           pos_val,
           lev,
-          status,,
+          status,
       ) = r
       try:
         dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
