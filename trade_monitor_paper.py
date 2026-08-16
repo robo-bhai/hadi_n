@@ -33,7 +33,7 @@ def get_db_connection():
 
     Fallback to SQLite if MySQL connection fails or password missing.
     """
-    # Updated Hardcoded Credentials
+    # Hardcoded Credentials
     db_host = "mysql-paper-trading-nomistorage3-d0bf.d.aivencloud.com"
     db_user = "avnadmin"
     db_name = "defaultdb"
@@ -87,11 +87,11 @@ def get_db_connection():
 # 📲 NTFY NOTIFICATION ENGINE (TOPIC FROM GITHUB / ENV)
 # =========================================================
 def get_ntfy_topic():
-    """Environment variables (GitHub Secrets) se LIVE_MON_TOP topic fetch karta hai."""
+    """Environment variables (GitHub Secrets) se LIVE_MON_PAPER topic fetch karta hai."""
     topic = os.getenv('LIVE_MON_PAPER', '').strip()
     if not topic:
         print(
-            "⚠️ LIVE_MON_TOP topic secret set nahi hai. Default fallback topic use hoga."
+            "⚠️ LIVE_MON_PAPER topic secret set nahi hai. Default fallback topic use hoga."
         )
         return "port_ff_xx_6555_bhai"
     return topic
