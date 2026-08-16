@@ -2,6 +2,9 @@ name: Manual Paper Trade Monitor & Pushbullet Report
 
 on:
   workflow_dispatch:
+  # Agar aap chahein ke ye har 5 ya 10 minute baad auto-run ho, to neeche wali lines uncomment kar lein:
+  # schedule:
+  #   - cron: '*/10 * * * *'
 
 jobs:
   run-monitor:
@@ -32,4 +35,5 @@ jobs:
           # Secrets from GitHub
           PASS_DB_2: ${{ secrets.PASS_DB_2 }}
           LIVE_MON_PAPER: ${{ secrets.LIVE_MON_PAPER }}
+          LIVE_MON_TOP: ${{ secrets.LIVE_MON_TOP }}
         run: python trade_monitor_paper.py
