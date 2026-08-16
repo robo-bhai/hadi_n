@@ -63,12 +63,18 @@ jobs:
           fi
 
           # Send Notification to Pushbullet
-          curl -s -X POST https://api.pushbullet.com/v2/pushes \
-            -H "Access-Token: $PUSHBULLET_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-binary "{\"type\": \"note\", \"title\": \"🚀 Live Crypto Dashboard Link (Cloudflare)\", \"body\": \"Your live trading dashboard is active:\n\n$TUNNEL_URL\"}"
-          
-          echo "✅ Pushbullet alert sent successfully!"
+          # Send Dashboard Link via ntfy.sh
+          curl -s -X POST https://ntfy.sh/hadi88_quant_alerts_99 \
+            -H "Title: 🚀 Live Crypto Dashboard Link (Cloudflare)" \
+            -H "Click: $TUNNEL_URL" \
+            -H "Priority: high" \
+            -H "Tags: rocket,link" \
+            -d "Your live trading dashboard is active:
+
+$TUNNEL_URL"
+
+          echo "✅ ntfy alert sent successfully!"
+
 
       - name: Keep Server Running for 3 Hours
         run: |
