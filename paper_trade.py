@@ -348,6 +348,9 @@ def generate_trade_chart(
 # =========================================================
 # 🔄 PROCESS ACTIVE TRADES (QUIET BACKGROUND EVALUATION)
 # =========================================================
+# =========================================================
+# 🔄 PROCESS ACTIVE TRADES (FIXED QUERY PARAMETERS)
+# =========================================================
 def process_active_trades():
   print('\n' + '=' * 60)
   print('🔍 CHECKING ACTIVE TRADES IN BACKGROUND')
@@ -510,19 +513,24 @@ def process_active_trades():
       exit_fee = exit_value * BINANCE_FEE_RATE
       net_pnl = gross_pnl - (entry_fee + exit_fee)
 
-      cursor.execute(
-          f'UPDATE trades SET status = {ph}, pnl = {ph} WHERE id = {ph}',
-          (status, net_pnl, t_id),
-      )
+      # Fixed Query 1: Update Trade Record
+      q_trade = f'UPDATE trades SET status = {ph}, pnl = {ph} WHERE id = {ph}'
+      cursor.execute(q_trade, (str(status), float(net_pnl), int(t_id)))
+
       frozen_margin = max(0.0, frozen_margin - margin)
       avail_cap += margin + net_pnl
       total_cap += net_pnl
 
-      cursor.execute(
-          'UPDATE portfolio SET total_capital = {ph}, available_capital ='
-          ' {ph}, frozen_margin = {ph} WHERE id = 1',
-          (total_cap, avail_cap, frozen_margin),
+      # Fixed Query 2: Update Portfolio Record
+      q_port = (
+          f'UPDATE portfolio SET total_capital = {ph}, available_capital ='
+          f' {ph}, frozen_margin = {ph} WHERE id = {ph}'
       )
+      cursor.execute(
+          q_port,
+          (float(total_cap), float(avail_cap), float(frozen_margin), 1),
+      )
+
       conn.commit()
 
       print(
@@ -532,6 +540,7 @@ def process_active_trades():
 
   conn.close()
   print('=' * 60 + '\n')
+
 
 
 # =========================================================
