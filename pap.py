@@ -115,7 +115,8 @@ def save_all_signals_in_db(trade):
 
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
+        # 💡 FIX: Using buffered=True prevents 'Unread result found' errors
+        cursor = conn.cursor(buffered=True)
 
         symbol = trade.get('symbol')
 
@@ -167,6 +168,7 @@ def save_all_signals_in_db(trade):
             cursor.close()
         if conn and conn.is_connected():
             conn.close()
+
 
 
 if __name__ == "__main__":
