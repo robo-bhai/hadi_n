@@ -5,6 +5,7 @@ import pandas as pd
 import requests
 import ssl
 import sqlite3
+from pap import save_all_signals_in_db
 
 # Conditional MySQL Connector (Remote / GitHub Secrets)
 try:
@@ -859,6 +860,10 @@ def analyze_legendary_setup(symbol, btc_regime):
         risk_amount_usdt = margin_used_usdt = position_size_usdt = 0
         recommended_leverage = 1
 
+    # 🔹 Coin Quantity Calculate Karein (Return se pehle)
+    coin_quantity = position_size_usdt / entry if entry > 0 else 0.0
+
+    # 🔹 Single Final Return
     return {
         'status': 'PASSED', 'symbol': symbol, 'price': live_price, 'score': score,
         'signal': signal, 'bias': bias, 'funding': funding_rate, 'taker_ratio': taker_ratio,
@@ -867,15 +872,20 @@ def analyze_legendary_setup(symbol, btc_regime):
         'ob_ratio': ob_ratio, 'confluences': confluences, 'entry': entry, 'sl': sl,
         'sl_pct': sl_pct * 100, 'tp1': tp1, 'tp2': tp2, 'margin_usdt': margin_used_usdt,
         'risk_usdt': risk_amount_usdt, 'pos_size_usdt': position_size_usdt,
+        'coin_qty': round(coin_quantity, 6),  # 👈 Single clean return block
         'leverage': recommended_leverage
     }
 
+
+# =========================================================
+# 🚀 MAIN SCANNER RUNNER & AUTOMATED TRADER BRIDGE
+# =========================================================
 # =========================================================
 # 🚀 MAIN SCANNER RUNNER & AUTOMATED TRADER BRIDGE
 # =========================================================
 def run_legendary_engine():
     print('=' * 80)
-    print('   🏛️ LEGENDARY ENGINE v3.5 (QUANT CVD + OI SQUEEZE + AUTOMATED TRADER BRIDGE) 🏛️')
+    print('   🏛️ LEGENDARY ENGINE v3.5 (QUANT CVD + OI SQUEEZE + DIRECT DB BRIDGE) 🏛️')
     print('=' * 80)
 
     print('\n⏳ Fetching BTC Macro Market Guard...')
@@ -911,7 +921,7 @@ def run_legendary_engine():
         for item in high_conviction:
             print(f"\n🪙 PAIR: {item['symbol']} | Signal: {item['signal']} | Score: {item['score']}/100")
             print(f"   ├─ Leverage: {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT | Risk: ${item['risk_usdt']:.2f} USDT (1%)")
-            print(f"   ├─ Position Size: ${item['pos_size_usdt']:.2f} USDT Notional")
+            print(f"   ├─ Position Size: ${item['pos_size_usdt']:.2f} USDT Notional | Qty: {item.get('coin_qty', 0.0)}")
             print(f"   ├─ Entry Price : ${fmt_p(item['entry'])}")
             print(f"   ├─ Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)")
             print(f"   ├─ Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)")
@@ -920,17 +930,52 @@ def run_legendary_engine():
     else:
         print('   (Koi high-probability safe trade spot nahi hui. Capital preserve karein!)\n')
 
-    if btc_regime == 'CHOPPY':
-        min_long_score = 75
-        max_short_score = 25
+    # =================================================================
+    # 🎯 DIRECT DB SIGNAL PASSING (NO CONDITIONS AT ALL)
+    # =================================================================
+    if high_conviction:
+        print('=' * 80)
+        print(f"📥 Passing {len(high_conviction)} generated signal(s) directly to DB...")
+        print('=' * 80)
+        for item in high_conviction:
+            # Har signal jaise hi high_conviction mein aayega, foran bina kisi condition ke pass ho jayega
+            save_all_signals_in_db(item)
     else:
-        min_long_score = 65
-        max_short_score = 35
+        print("ℹ️ No high conviction signals generated in this run to pass to DB.")
 
-    pushbullet_signals = [
-        r for r in high_conviction 
-        if r['score'] >= min_long_score or r['score'] <= max_short_score
-    ]
+    # =================================================================
+    # 🛡️ SUMMARY & LOGGING REPORTS
+    # =================================================================
+    if blocked_trades:
+        print("\n" + "=" * 80)
+        print("🛡️ BTC / MTF GUARD BLOCKED TRADES")
+        print("=" * 80)
+        for item in blocked_trades:
+            print(f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100")
+            print(f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n")
+
+    if rejected:
+        print("=" * 80)
+        print(f"🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)")
+        print("=" * 80)
+        for r in rejected[:15]:
+            print(f"❌ {r['symbol']:<10} | Reason: {r['reason']}")
+        if len(rejected) > 15:
+            print(f"   ... and {len(rejected) - 15} more coins rejected for safe trading.")
+        print("\n")
+
+    print("=" * 80)
+    print("🟡 LOW CONVICTION / NEUTRAL WATCHLIST SUMMARY")
+    print("=" * 80)
+    summary_list = [f"{i['symbol']}:{i['score']}" for i in neutral_trades]
+    print("   " + (", ".join(summary_list) if summary_list else "None"))
+    print("\n" + "=" * 80 + "\n")
+
+    return {
+        "status": "success",
+        "processed_signals": len(high_conviction)
+    }
+
 
     # =================================================================
     # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
