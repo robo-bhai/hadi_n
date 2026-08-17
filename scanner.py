@@ -936,42 +936,52 @@ def run_legendary_engine():
     # =================================================================
     # 🎯 SIGNAL PROCESSING: DB SAVER & TRADER ENGINE BRIDGE
     # =================================================================
+    # =================================================================
+    # 🎯 SIGNAL PROCESSING: DB SAVER & TRADER ENGINE DUAL BRIDGE
+    # =================================================================
     executed_engine_trades = []
 
     if high_conviction:
         print('=' * 80)
-        print(f"📥 Processing {len(high_conviction)} generated signal(s) to DB & Engine...")
+        print(f"📥 Processing {len(high_conviction)} high conviction signal(s) to DB & Trader Engine...")
         print('=' * 80)
 
         for item in high_conviction:
             symbol = item.get('symbol')
+            score = item.get('score', 0)
             
-            # 1. Save Signal Direct to MySQL DB (pap.py)
-            saved_to_db = save_all_signals_in_db(item)
+            # 💾 1. Save Signal Direct to MySQL/Paper DB via pap.py
+            saved_to_db = False
+            try:
+                saved_to_db = save_all_signals_in_db(item)
+            except Exception as db_err:
+                print(f"❌ [DB SAVE ERROR] Failed to save {symbol} in DB: {db_err}")
 
-            # 2. Forward Signal to Automated Trader Engine (If available)
-            if TRADER_ENGINE_AVAILABLE:
+            # 🚀 2. Forward Signal to Master Trader Engine (If imported & active)
+            engine_res = None
+            if 'TRADER_ENGINE_AVAILABLE' in globals() and TRADER_ENGINE_AVAILABLE:
                 try:
-                    print(f"🚀 [ENGINE EXECUTION] Triggering Trader Engine for [{symbol}]...")
+                    print(f"🚀 [ENGINE EXECUTION] Triggering Master Trader Engine for [{symbol}] (Score: {score})...")
+                    # Executes full technical analysis, risk sizing & notification engine
                     engine_res = process_trade_logic(symbol)
-                    executed_engine_trades.append({
-                        "symbol": symbol,
-                        "score": item.get('score'),
-                        "db_saved": saved_to_db,
-                        "engine_result": engine_res
-                    })
                 except Exception as e:
+                    engine_res = f"Engine Error: {str(e)}"
                     print(f"❌ [ENGINE ERROR] Failed to execute engine for {symbol}: {e}")
             else:
-                executed_engine_trades.append({
-                    "symbol": symbol,
-                    "score": item.get('score'),
-                    "db_saved": saved_to_db,
-                    "engine_result": "Engine Disabled"
-                })
+                engine_res = "Engine Disabled or Module Not Loaded"
+                print(f"⚠️ [ENGINE SKIPPED] Trader Engine unavailable for {symbol}.")
+
+            # Record detailed execution state for return response
+            executed_engine_trades.append({
+                "symbol": symbol,
+                "score": score,
+                "bias": item.get('bias', 'NEUTRAL'),
+                "db_saved": saved_to_db,
+                "engine_result": engine_res
+            })
 
     else:
-        print("ℹ️ No high conviction signals generated in this run.")
+        print("ℹ️ No high conviction signals generated in this run to pass.")
 
     # =================================================================
     # 🛡️ SUMMARY & LOGGING REPORTS
@@ -1004,12 +1014,18 @@ def run_legendary_engine():
     # =================================================================
     # 🎯 FINAL RESPONSIVE RETURN OBJECT
     # =================================================================
+    trader_engine_status = globals().get('TRADER_ENGINE_AVAILABLE', False)
+
     return {
         "status": "success",
         "processed_signals": len(high_conviction),
-        "trader_engine_active": TRADER_ENGINE_AVAILABLE,
-        "executed_trades": executed_engine_trades
+        "trader_engine_active": trader_engine_status,
+        "executed_trades": executed_engine_trades,
+        "blocked_count": len(blocked_trades) if 'blocked_trades' in locals() else 0,
+        "rejected_count": len(rejected) if 'rejected' in locals() else 0,
+        "neutral_count": len(neutral_trades) if 'neutral_trades' in locals() else 0
     }
+
 
 
 
