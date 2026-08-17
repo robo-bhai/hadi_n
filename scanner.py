@@ -939,6 +939,9 @@ def run_legendary_engine():
     # =================================================================
     # 🎯 SIGNAL PROCESSING: DB SAVER & TRADER ENGINE DUAL BRIDGE
     # =================================================================
+    # =================================================================
+    # 🎯 SIGNAL PROCESSING: DB SAVER & TRADER ENGINE DUAL BRIDGE
+    # =================================================================
     executed_engine_trades = []
 
     if high_conviction:
@@ -949,6 +952,7 @@ def run_legendary_engine():
         for item in high_conviction:
             symbol = item.get('symbol')
             score = item.get('score', 0)
+            bias = item.get('bias', 'NEUTRAL')
             
             # 💾 1. Save Signal Direct to MySQL/Paper DB via pap.py
             saved_to_db = False
@@ -962,7 +966,6 @@ def run_legendary_engine():
             if 'TRADER_ENGINE_AVAILABLE' in globals() and TRADER_ENGINE_AVAILABLE:
                 try:
                     print(f"🚀 [ENGINE EXECUTION] Triggering Master Trader Engine for [{symbol}] (Score: {score})...")
-                    # Executes full technical analysis, risk sizing & notification engine
                     engine_res = process_trade_logic(symbol)
                 except Exception as e:
                     engine_res = f"Engine Error: {str(e)}"
@@ -971,11 +974,11 @@ def run_legendary_engine():
                 engine_res = "Engine Disabled or Module Not Loaded"
                 print(f"⚠️ [ENGINE SKIPPED] Trader Engine unavailable for {symbol}.")
 
-            # Record detailed execution state for return response
+            # Record detailed execution state
             executed_engine_trades.append({
                 "symbol": symbol,
                 "score": score,
-                "bias": item.get('bias', 'NEUTRAL'),
+                "bias": bias,
                 "db_saved": saved_to_db,
                 "engine_result": engine_res
             })
@@ -1012,19 +1015,56 @@ def run_legendary_engine():
     print("\n" + "=" * 80 + "\n")
 
     # =================================================================
-    # 🎯 FINAL RESPONSIVE RETURN OBJECT
+    # 📲 NTFY NOTIFICATION DISPATCHER (NO JSON RETURN)
     # =================================================================
-    trader_engine_status = globals().get('TRADER_ENGINE_AVAILABLE', False)
+    NTFY_URL = "https://ntfy.sh/xxc_xxx_ioc"
 
-    return {
-        "status": "success",
-        "processed_signals": len(high_conviction),
-        "trader_engine_active": trader_engine_status,
-        "executed_trades": executed_engine_trades,
-        "blocked_count": len(blocked_trades) if 'blocked_trades' in locals() else 0,
-        "rejected_count": len(rejected) if 'rejected' in locals() else 0,
-        "neutral_count": len(neutral_trades) if 'neutral_trades' in locals() else 0
-    }
+    if high_conviction:
+        ntfy_title = f"🚨 SCANNER ALERT: {len(high_conviction)} Signals Generated"
+        ntfy_body = f"🌐 BTC Regime: {btc_regime}\n"
+        ntfy_body += "========================================\n\n"
+        
+        for trade in executed_engine_trades:
+            sym = trade['symbol']
+            sc = trade['score']
+            direction = trade['bias']
+            db_st = "✅ Saved" if trade['db_saved'] else "❌ Failed"
+            eng_st = trade['engine_result']
+            
+            ntfy_body += f"🪙 {sym} ({direction}) | Score: {sc}/100\n"
+            ntfy_body += f"   • DB Status: {db_st}\n"
+            ntfy_body += f"   • Engine: {eng_st}\n\n"
+            
+        headers = {
+            "Title": ntfy_title,
+            "Priority": "high",
+            "Tags": "rocket,chart_with_upwards_trend",
+            "User-Agent": "ScannerEngine/1.0"
+        }
+        
+        try:
+            requests.post(NTFY_URL, data=ntfy_body.encode("utf-8"), headers=headers, timeout=10)
+            print("🚀 [NTFY ALERT] Notification sent successfully to ntfy.sh/xxc_xxx_ioc")
+        except Exception as ntfy_err:
+            print(f"❌ [NTFY ERROR] Failed to send notification: {ntfy_err}")
+
+    else:
+        ntfy_title = "ℹ️ SCANNER RUN COMPLETE: No Signals"
+        ntfy_body = f"🌐 BTC Regime: {btc_regime}\nNo high conviction signals found in this scan cycle."
+        headers = {
+            "Title": ntfy_title,
+            "Priority": "low",
+            "Tags": "snowflake",
+            "User-Agent": "ScannerEngine/1.0"
+        }
+        try:
+            requests.post(NTFY_URL, data=ntfy_body.encode("utf-8"), headers=headers, timeout=10)
+        except Exception:
+            pass
+
+    # Clean Exit String (Replacing JSON Return)
+    return f"Scan cycle finished. Processed {len(high_conviction)} signal(s). Notification dispatched to ntfy."
+
 
 
 
