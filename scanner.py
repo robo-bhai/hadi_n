@@ -1018,12 +1018,12 @@ def run_legendary_engine():
     # 📲 NTFY NOTIFICATION DISPATCHER (NO JSON RETURN)
     # =================================================================
     # =================================================================
-    # 📲 NTFY NOTIFICATION DISPATCHER (LATIN-1 HEADER ENCODING SAFE)
     # =================================================================
-    NTFY_URL = "https://ntfy.sh/xxc_xxx_ioc"
+    # 📲 NTFY NOTIFICATION DISPATCHER (DIRECT & RELIABLE)
+    # =================================================================
+    NTFY_URL = "https://ntfy.sh/xxc_xxx_io"
 
     if high_conviction:
-        # HTTP Headers require ISO-8859-1 (Latin-1) -> Emojis are placed in 'Tags' header instead
         ntfy_title = f"SCANNER ALERT: {len(high_conviction)} Signals Generated"
         
         ntfy_body = f"🌐 BTC Regime: {btc_regime}\n"
@@ -1048,28 +1048,31 @@ def run_legendary_engine():
         }
         
         try:
-            requests.post(NTFY_URL, data=ntfy_body.encode("utf-8"), headers=headers, timeout=10)
-            print("🚀 [NTFY ALERT] Notification sent successfully to ntfy.sh/xxc_xxx_ioc")
+            print("⏳ Sending alert to ntfy.sh...")
+            res = requests.post(NTFY_URL, data=ntfy_body.encode("utf-8"), headers=headers, timeout=15)
+            if res.status_code == 200:
+                print("✅ [NTFY ALERT] Notification delivered successfully!")
+            else:
+                print(f"⚠️ [NTFY RESP] Server returned status code: {res.status_code}")
         except Exception as ntfy_err:
             print(f"❌ [NTFY ERROR] Failed to send notification: {ntfy_err}")
 
     else:
+        print("ℹ️ No high conviction trades found. Sending idle status update...")
         ntfy_title = "SCANNER RUN COMPLETE: No Signals"
         ntfy_body = f"🌐 BTC Regime: {btc_regime}\nNo high conviction signals found in this scan cycle."
         headers = {
             "Title": ntfy_title,
             "Priority": "low",
-            "Tags": "information_source,snowflake",
+            "Tags": "snowflake",
             "User-Agent": "ScannerEngine/1.0"
         }
         try:
-            requests.post(NTFY_URL, data=ntfy_body.encode("utf-8"), headers=headers, timeout=10)
-        except Exception:
-            pass
+            requests.post(NTFY_URL, data=ntfy_body.encode("utf-8"), headers=headers, timeout=15)
+        except Exception as e:
+            print(f"⚠️ [NTFY ERROR] Idle alert failed: {e}")
 
-    # Clean Exit String (Replacing JSON Return)
     return f"Scan cycle finished. Processed {len(high_conviction)} signal(s). Notification dispatched to ntfy."
-
 
 
 
