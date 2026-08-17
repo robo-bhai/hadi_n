@@ -99,11 +99,12 @@ def reset_and_recreate_db():
 
 
 # =========================================================
-# 2. DIRECT TRADE SAVER (SCANNER BRIDGE)
+# 2. DIRECT TRADE SAVER (SCANNER BRIDGE WITH DUPLICATE CHECK)
 # =========================================================
 def save_all_signals_in_db(trade):
     """
-    Directly receives trade object/dict from scanner script 
+    Directly receives trade object/dict from scanner script,
+    checks if active trade for symbol already exists (skips if yes),
     and saves it to MySQL trades table instantly.
     """
     if not trade or trade.get('bias') not in ['LONG', 'SHORT']:
@@ -116,8 +117,18 @@ def save_all_signals_in_db(trade):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Extract values directly from trade dictionary
         symbol = trade.get('symbol')
+
+        # 🔍 1. DUPLICATE CHECK (Active Trade Filter)
+        check_query = "SELECT id FROM trades WHERE symbol = %s AND status = 'ACTIVE'"
+        cursor.execute(check_query, (symbol,))
+        existing_trade = cursor.fetchone()
+
+        if existing_trade:
+            print(f"⏭️ [SKIPPED] Active trade already exists for {symbol} (DB ID: {existing_trade[0]})")
+            return False
+
+        # Extract values directly from trade dictionary
         direction = trade.get('bias')
         entry_price = trade.get('entry', 0.0)
         sl_price = trade.get('sl', 0.0)
@@ -128,6 +139,7 @@ def save_all_signals_in_db(trade):
         coin_qty = trade.get('coin_qty', 0.0)
         leverage = trade.get('leverage', 1)
 
+        # 📥 2. INSERT NEW ACTIVE TRADE
         insert_query = """
             INSERT INTO trades (
                 symbol, direction, entry_price, sl_price, tp1_price, tp2_price,
