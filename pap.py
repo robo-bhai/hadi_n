@@ -43,22 +43,6 @@ def reset_and_recreate_db():
         cursor.execute("SET FOREIGN_KEY_CHECKS = 1;")
         print("✅ Old tables deleted!")
 
-        print("\n🏗️ Creating 'portfolio' table...")
-        cursor.execute("""
-        CREATE TABLE portfolio (
-            id INT PRIMARY KEY,
-            total_capital DOUBLE NOT NULL,
-            available_capital DOUBLE NOT NULL,
-            frozen_margin DOUBLE DEFAULT 0.0
-        );
-        """)
-
-        cursor.execute("""
-        INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin)
-        VALUES (1, 1000.0, 1000.0, 0.0);
-        """)
-        print("✅ Portfolio table created & $1000.00 Capital initialized!")
-
         print("\n🏗️ Creating 'trades' table...")
         cursor.execute("""
         CREATE TABLE trades (
@@ -79,6 +63,29 @@ def reset_and_recreate_db():
         );
         """)
         print("✅ Trades history table created!")
+
+        print("\n🏗️ Creating 'portfolio' table...")
+        cursor.execute("""
+        CREATE TABLE portfolio (
+            id INT PRIMARY KEY,
+            total_capital DOUBLE NOT NULL,
+            available_capital DOUBLE NOT NULL,
+            frozen_margin DOUBLE DEFAULT 0.0
+        );
+        """)
+
+        # 🔍 Sync existing ACTIVE trades margin if any exists
+        cursor.execute("SELECT COALESCE(SUM(margin_frozen), 0.0) FROM trades WHERE status = 'ACTIVE'")
+        total_active_frozen = cursor.fetchone()[0] or 0.0
+
+        initial_capital = 1000.0
+        initial_available = initial_capital - total_active_frozen
+
+        cursor.execute("""
+        INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin)
+        VALUES (1, %s, %s, %s);
+        """, (initial_capital, initial_available, total_active_frozen))
+        print("✅ Portfolio table created & Capital initialized with Active Trades Frozen Margin!")
 
         conn.commit()
         
@@ -105,7 +112,7 @@ def save_all_signals_in_db(trade):
     """
     Directly receives trade object/dict from scanner script,
     checks if active trade for symbol already exists (skips if yes),
-    and saves it to MySQL trades table instantly.
+    saves it to MySQL trades table instantly, AND updates portfolio frozen margin.
     """
     if not trade or trade.get('bias') not in ['LONG', 'SHORT']:
         return False
@@ -115,7 +122,6 @@ def save_all_signals_in_db(trade):
 
     try:
         conn = get_db_connection()
-        # 💡 FIX: Using buffered=True prevents 'Unread result found' errors
         cursor = conn.cursor(buffered=True)
 
         symbol = trade.get('symbol')
@@ -135,7 +141,7 @@ def save_all_signals_in_db(trade):
         sl_price = trade.get('sl', 0.0)
         tp1_price = trade.get('tp1', 0.0)
         tp2_price = trade.get('tp2', 0.0)
-        margin_frozen = trade.get('margin_usdt', 0.0)
+        margin_frozen = trade.get('margin_usdt', 0.0)  # Total actual margin without leverage
         pos_value = trade.get('pos_size_usdt', 0.0)
         coin_qty = trade.get('coin_qty', 0.0)
         leverage = trade.get('leverage', 1)
@@ -154,21 +160,36 @@ def save_all_signals_in_db(trade):
         )
 
         cursor.execute(insert_query, vals)
+
+        # 🔄 3. UPDATE PORTFOLIO FROZEN & AVAILABLE CAPITAL
+        # All Active trades ka total freeze amount sync kar lein
+        cursor.execute("SELECT COALESCE(SUM(margin_frozen), 0.0) FROM trades WHERE status = 'ACTIVE'")
+        new_total_frozen = cursor.fetchone()[0] or 0.0
+
+        update_portfolio_query = """
+            UPDATE portfolio 
+            SET frozen_margin = %s,
+                available_capital = total_capital - %s
+            WHERE id = 1
+        """
+        cursor.execute(update_portfolio_query, (new_total_frozen, new_total_frozen))
+
         conn.commit()
-        print(f"✅ [DB SAVED] Successfully saved active trade for {symbol} ({direction}) | Qty: {coin_qty}")
+        print(f"✅ [DB SAVED] Trade saved for {symbol} ({direction}) | Margin Frozen: ${margin_frozen:.2f}")
+        print(f"📊 [PORTFOLIO UPDATED] Total Frozen Margin across all Active Trades: ${new_total_frozen:.2f}")
         return True
 
     except Exception as err:
+        if conn:
+            conn.rollback()
         print(f"❌ [DB SAVE ERROR] Failed to save trade for {trade.get('symbol')}: {err}")
         return False
 
     finally:
-        # Guarantee close database resources regardless of success or error
         if cursor:
             cursor.close()
         if conn and conn.is_connected():
             conn.close()
-
 
 
 if __name__ == "__main__":
