@@ -1017,10 +1017,15 @@ def run_legendary_engine():
     # =================================================================
     # 📲 NTFY NOTIFICATION DISPATCHER (NO JSON RETURN)
     # =================================================================
+    # =================================================================
+    # 📲 NTFY NOTIFICATION DISPATCHER (LATIN-1 HEADER ENCODING SAFE)
+    # =================================================================
     NTFY_URL = "https://ntfy.sh/xxc_xxx_ioc"
 
     if high_conviction:
-        ntfy_title = f"🚨 SCANNER ALERT: {len(high_conviction)} Signals Generated"
+        # HTTP Headers require ISO-8859-1 (Latin-1) -> Emojis are placed in 'Tags' header instead
+        ntfy_title = f"SCANNER ALERT: {len(high_conviction)} Signals Generated"
+        
         ntfy_body = f"🌐 BTC Regime: {btc_regime}\n"
         ntfy_body += "========================================\n\n"
         
@@ -1038,7 +1043,7 @@ def run_legendary_engine():
         headers = {
             "Title": ntfy_title,
             "Priority": "high",
-            "Tags": "rocket,chart_with_upwards_trend",
+            "Tags": "rotating_light,rocket,chart_with_upwards_trend",
             "User-Agent": "ScannerEngine/1.0"
         }
         
@@ -1049,12 +1054,12 @@ def run_legendary_engine():
             print(f"❌ [NTFY ERROR] Failed to send notification: {ntfy_err}")
 
     else:
-        ntfy_title = "ℹ️ SCANNER RUN COMPLETE: No Signals"
+        ntfy_title = "SCANNER RUN COMPLETE: No Signals"
         ntfy_body = f"🌐 BTC Regime: {btc_regime}\nNo high conviction signals found in this scan cycle."
         headers = {
             "Title": ntfy_title,
             "Priority": "low",
-            "Tags": "snowflake",
+            "Tags": "information_source,snowflake",
             "User-Agent": "ScannerEngine/1.0"
         }
         try:
@@ -1064,6 +1069,7 @@ def run_legendary_engine():
 
     # Clean Exit String (Replacing JSON Return)
     return f"Scan cycle finished. Processed {len(high_conviction)} signal(s). Notification dispatched to ntfy."
+
 
 
 
