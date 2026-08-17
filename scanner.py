@@ -933,15 +933,45 @@ def run_legendary_engine():
     # =================================================================
     # 🎯 DIRECT DB SIGNAL PASSING (NO CONDITIONS AT ALL)
     # =================================================================
+    # =================================================================
+    # 🎯 SIGNAL PROCESSING: DB SAVER & TRADER ENGINE BRIDGE
+    # =================================================================
+    executed_engine_trades = []
+
     if high_conviction:
         print('=' * 80)
-        print(f"📥 Passing {len(high_conviction)} generated signal(s) directly to DB...")
+        print(f"📥 Processing {len(high_conviction)} generated signal(s) to DB & Engine...")
         print('=' * 80)
+
         for item in high_conviction:
-            # Har signal jaise hi high_conviction mein aayega, foran bina kisi condition ke pass ho jayega
-            save_all_signals_in_db(item)
+            symbol = item.get('symbol')
+            
+            # 1. Save Signal Direct to MySQL DB (pap.py)
+            saved_to_db = save_all_signals_in_db(item)
+
+            # 2. Forward Signal to Automated Trader Engine (If available)
+            if TRADER_ENGINE_AVAILABLE:
+                try:
+                    print(f"🚀 [ENGINE EXECUTION] Triggering Trader Engine for [{symbol}]...")
+                    engine_res = process_trade_logic(symbol)
+                    executed_engine_trades.append({
+                        "symbol": symbol,
+                        "score": item.get('score'),
+                        "db_saved": saved_to_db,
+                        "engine_result": engine_res
+                    })
+                except Exception as e:
+                    print(f"❌ [ENGINE ERROR] Failed to execute engine for {symbol}: {e}")
+            else:
+                executed_engine_trades.append({
+                    "symbol": symbol,
+                    "score": item.get('score'),
+                    "db_saved": saved_to_db,
+                    "engine_result": "Engine Disabled"
+                })
+
     else:
-        print("ℹ️ No high conviction signals generated in this run to pass to DB.")
+        print("ℹ️ No high conviction signals generated in this run.")
 
     # =================================================================
     # 🛡️ SUMMARY & LOGGING REPORTS
@@ -971,181 +1001,16 @@ def run_legendary_engine():
     print("   " + (", ".join(summary_list) if summary_list else "None"))
     print("\n" + "=" * 80 + "\n")
 
+    # =================================================================
+    # 🎯 FINAL RESPONSIVE RETURN OBJECT
+    # =================================================================
     return {
         "status": "success",
-        "processed_signals": len(high_conviction)
+        "processed_signals": len(high_conviction),
+        "trader_engine_active": TRADER_ENGINE_AVAILABLE,
+        "executed_trades": executed_engine_trades
     }
 
-
-    # =================================================================
-    # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
-    # =================================================================
-    # =================================================================
-    # 🎯 SIGNAL PROCESSING & PAPER DB NOTIFICATION BUILDER
-    # =================================================================
-    # =================================================================
-    # 🎯 SIGNAL PROCESSING & DUAL DB ROUTING BUILDER
-    # =================================================================
-    if pushbullet_signals:
-        new_signals_count = 0
-
-        for item in pushbullet_signals:
-            symbol = item["symbol"]
-            direction = item["bias"]
-            score = item["score"]
-
-            # Dual DB Status Check
-            paper_active = is_trade_running_in_db(symbol)
-            
-            # Helper logic: Check if active on Real DB Guard
-            is_real_blocked, real_block_reason = check_db_trade_guard(symbol, direction)
-            is_real_active = is_real_blocked and ("Active trade already exists" in real_block_reason)
-
-            # -------------------------------------------------------------
-            # 1. PAPER TRADING DB ROUTING
-            # -------------------------------------------------------------
-            if not paper_active:
-                paper_saved = save_signal_to_paper_trade_db(item)
-
-                if paper_saved:
-                    new_signals_count += 1
-
-                    # Notification Title
-                    single_alert_title = (
-                        f"🚨 {symbol} - {item['signal']} (Score: {item['score']})"
-                    )
-
-                    # Notification Body Formatting
-                    card_body = f"🌐 BTC Regime: {btc_regime} (${fmt_p(btc_price)})\n"
-                    card_body += "========================================\n"
-                    card_body += f"🪙 PAIR: {symbol}\n"
-                    card_body += f"📊 Signal: {item['signal']} | Score: {item['score']}/100\n"
-                    card_body += f"⚙️ Execution: Leverage {item['leverage']}x | Margin: ${item['margin_usdt']:.2f} USDT\n"
-                    card_body += f"💵 Pos Size: ${item['pos_size_usdt']:.2f} USDT | Max Risk: ${item['risk_usdt']:.2f} USDT (1%)\n"
-                    card_body += f"📥 Entry Price : ${fmt_p(item['entry'])}\n"
-                    card_body += f"🛑 Stop Loss   : ${fmt_p(item['sl'])} (-{item['sl_pct']:.2f}%)\n"
-                    card_body += f"🎯 Target 1    : ${fmt_p(item['tp1'])} (R:R 1:1.5)\n"
-                    card_body += f"🎯 Target 2    : ${fmt_p(item['tp2'])} (R:R 1:2.0)\n\n"
-                    card_body += "📈 QUANT STATS:\n"
-                    card_body += f"   • 4H RSI: {item['rsi_4h']:.1f} | 4H ADX: {item['adx_4h']:.1f}\n"
-                    card_body += f"   • CVD Taker Buy Ratio: {item['taker_ratio']:.2f}x | 15m OI Delta: {item['oi_delta']:+.2f}%\n"
-                    card_body += f"   • Orderbook Ratio: {item['ob_ratio']:.2f}x | Funding Rate: {item['funding']:.4f}%\n"
-                    card_body += f"   • Key Levels: Sup ${fmt_p(item['support'])} | Res ${fmt_p(item['resistance'])}\n\n"
-                    card_body += "💡 CONFLUENCES & REASONS:\n"
-                    for conf in item["confluences"]:
-                        card_body += f"   ✓ {conf}\n"
-
-                    send_pushbullet_notification(single_alert_title, card_body)
-                    time.sleep(1)  # API rate-limit delay
-            else:
-                print(f"⏭️ [PAPER DB] Skipping {symbol}: Active trade already exists in Paper DB.")
-
-            # -------------------------------------------------------------
-            # 2. REAL TRADER ENGINE ROUTING
-            # -------------------------------------------------------------
-            if TRADER_ENGINE_AVAILABLE:
-                if not is_real_active:
-                    if is_real_blocked:
-                        print(f"🛡️ [REAL DB GUARD] Skipping Engine for {symbol}: {real_block_reason}")
-                        alert_title = f"🛡️ TRADE GUARD BLOCKED: {symbol}"
-                        alert_body = (
-                            f"⚠️ Engine execution bypassed for {symbol}.\n"
-                            f"📌 Reason: {real_block_reason}\n"
-                            f"📊 Signal Bias: {direction} | Score: {score}/100\n"
-                            f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-                        )
-                        send_pushbullet_notification(alert_title, alert_body)
-                    else:
-                        print(f"🚀 [REAL ENGINE] Trade not active on Real DB. Executing Trader Engine for [{symbol}]...")
-                        process_trade_logic(symbol)
-                else:
-                    print(f"🛡️ [REAL DB] Skipping Engine for {symbol}: Active trade already running on Real DB.")
-
-        if new_signals_count == 0:
-            print("ℹ️ All signals were already active in Paper DB. Notification skipped.")
-    else:
-        print("ℹ️ No high conviction signal found reaching score threshold. Skipping Pushbullet notification.")
-
-    # =================================================================
-    # 🛡️ SUMMARY & LOGGING REPORTS
-    # =================================================================
-    if blocked_trades:
-        print("=" * 80)
-        print("🛡️ BTC / MTF GUARD BLOCKED TRADES")
-        print("=" * 80)
-        for item in blocked_trades:
-            print(f"⚠️ {item['symbol']:<10} | Signal: {item['signal']} | Score: {item['score']}/100")
-            print(f"   └─ Reason: Macro Trend ({btc_regime} / MTF Structure) trade direction ke opposite hai.\n")
-
-    if rejected:
-        print("=" * 80)
-        print(f"🛡️ REJECTED COINS ({len(rejected)} Pairs filtered due to High Spread / Volatility / Sideways Risk)")
-        print("=" * 80)
-        for r in rejected[:15]:
-            print(f"❌ {r['symbol']:<10} | Reason: {r['reason']}")
-        if len(rejected) > 15:
-            print(f"   ... and {len(rejected) - 15} more coins rejected for safe trading.")
-        print("\n")
-
-    print("=" * 80)
-    print("🟡 LOW CONVICTION / NEUTRAL WATCHLIST SUMMARY")
-    print("=" * 80)
-    summary_list = [f"{i['symbol']}:{i['score']}" for i in neutral_trades]
-    print("   " + (", ".join(summary_list) if summary_list else "None"))
-    print("\n" + "=" * 80 + "\n")
-
-
-
-    # =========================================================
-    # 🔗 AUTOMATED TRADER ENGINE INTEGRATION TRIGGER
-    # =========================================================
-    if TRADER_ENGINE_AVAILABLE and pushbullet_signals:
-        print(f"\n🤖 [AUTOMATION BRIDGE] Found {len(pushbullet_signals)} high conviction signal(s). Checking DB Guard...")
-        
-        executed_trades = []
-        for trade in pushbullet_signals:
-            symbol = trade['symbol']
-            score = trade['score']
-            direction = trade['bias']
-            
-            is_blocked, block_reason = check_db_trade_guard(symbol, direction)
-
-            if is_blocked:
-                print(f"🛡️ [DB GUARD BLOCKED] Skipping Engine for {symbol}: {block_reason}")
-                
-                alert_title = f"🛡️ TRADE GUARD BLOCKED: {symbol}"
-                alert_body = (
-                    f"⚠️ Engine execution bypassed for {symbol}.\n"
-                    f"📌 Reason: {block_reason}\n"
-                    f"📊 Signal Bias: {direction} | Score: {score}/100\n"
-                    f"⏰ Time: {time.strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                send_pushbullet_notification(alert_title, alert_body)
-                continue
-
-            print(f"🚀 Triggering Trader Engine for [{symbol}] (Score: {score})...")
-            result = process_trade_logic(symbol)
-            executed_trades.append({"symbol": symbol, "score": score, "result": result})
-            
-        return {
-            "status": "success",
-            "executed_count": len(executed_trades),
-            "trades": executed_trades
-        }
-
-    elif TRADER_ENGINE_AVAILABLE:
-        print("\n🤖 [AUTOMATION BRIDGE] No valid trade passed threshold to execute in Trader Engine.")
-        return {
-            "status": "skipped",
-            "reason": "No high-conviction signals passed threshold."
-        }
-
-    else:
-        print("\n⚠️ [AUTOMATION BRIDGE] Trader Engine unavailable or disabled.")
-        return {
-            "status": "disabled",
-            "reason": "Trader Engine module not imported."
-        }
 
 
 if __name__ == '__main__':
