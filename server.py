@@ -114,83 +114,102 @@ def get_db_connection():
 # =========================================================
 # 📊 BINANCE API HELPERS
 # =========================================================
+# =========================================================
+# 📊 BINANCE OFFICIAL PUBLIC DATA APIs (NO-BLOCK ENDPOINTS)
+# =========================================================
+BINANCE_SPOT_URL = 'https://data-api.binance.vision/api/v3/klines'
+BINANCE_BOOK_TICKER_URL = (
+    'https://data-api.binance.vision/api/v3/ticker/bookTicker'
+)
+BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
+
+
 def fetch_live_price(symbol):
-  symbol_clean = symbol.replace("/", "").upper()
-  if not symbol_clean.endswith("USDT"):
-    symbol_clean += "USDT"
+  """Fetches live price using Binance Vision BookTicker + Futures Fallbacks."""
+  symbol_clean = symbol.replace('/', '').upper()
+  if not symbol_clean.endswith('USDT'):
+    symbol_clean += 'USDT'
 
   headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      'User-Agent': (
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       )
   }
 
-  # 1. Binance Direct Endpoints
-  binance_urls = [
-      f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol_clean}",
-      f"https://api.binance.com/api/v3/ticker/price?symbol={symbol_clean}",
-      f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol_clean}",
-  ]
-
-  for url in binance_urls:
-    try:
-      res = requests.get(url, headers=headers, timeout=4)
-      if res.status_code == 200:
-        return float(res.json().get("price", 0.0))
-    except Exception:
-      continue
-
-  # 2. FALLBACK 1: Bybit API (GitHub IPs par rarely block hoti hai)
+  # 1. Primary: Binance Vision Book Ticker (Data API - No IP Block)
   try:
-    bybit_url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol_clean}"
+    res = requests.get(
+        BINANCE_BOOK_TICKER_URL,
+        params={'symbol': symbol_clean},
+        headers=headers,
+        timeout=4,
+    )
+    if res.status_code == 200:
+      data = res.json()
+      # Ask/Bid average or ask price as live market price
+      ask_p = float(data.get('askPrice', 0.0))
+      bid_p = float(data.get('bidPrice', 0.0))
+      if ask_p > 0 and bid_p > 0:
+        return (ask_p + bid_p) / 2
+      elif ask_p > 0:
+        return ask_p
+  except Exception as e:
+    print(f'⚠️ Vision BookTicker error for {symbol_clean}: {e}')
+
+  # 2. Secondary Fallback: Binance Futures Premium Index / Mark Price
+  try:
+    res = requests.get(
+        BINANCE_FUTURES_FUNDING_URL,
+        params={'symbol': symbol_clean},
+        headers=headers,
+        timeout=4,
+    )
+    if res.status_code == 200:
+      data = res.json()
+      mark_price = float(data.get('markPrice', 0.0))
+      if mark_price > 0:
+        return mark_price
+  except Exception:
+    pass
+
+  # 3. Tertiary Fallback: Bybit API
+  try:
+    bybit_url = f'https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol_clean}'
     res = requests.get(bybit_url, headers=headers, timeout=4)
     if res.status_code == 200:
-      list_data = res.json().get("result", {}).get("list", [])
+      list_data = res.json().get('result', {}).get('list', [])
       if list_data:
-        return float(list_data[0].get("lastPrice", 0.0))
+        return float(list_data[0].get('lastPrice', 0.0))
   except Exception:
     pass
 
-  # 3. FALLBACK 2: MEXC API
-  try:
-    mexc_url = (
-        f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol_clean}"
-    )
-    res = requests.get(mexc_url, headers=headers, timeout=4)
-    if res.status_code == 200:
-      data = res.json().get("data", {})
-      if data and "lastPrice" in data:
-        return float(data["lastPrice"])
-  except Exception:
-    pass
-
-  # Don't send ntfy alert on every single failed tick to avoid spamming ntfy
   return 0.0
 
 
-def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
-  symbol_clean = symbol.replace("/", "").upper()
-  if not symbol_clean.endswith("USDT"):
-    symbol_clean += "USDT"
+def fetch_binance_klines(symbol, interval='1m', limit=500, start_time=None):
+  """Fetches Kline chart data using Binance Vision API endpoint."""
+  symbol_clean = symbol.replace('/', '').upper()
+  if not symbol_clean.endswith('USDT'):
+    symbol_clean += 'USDT'
 
   headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      'User-Agent': (
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       )
   }
-  params = {"symbol": symbol_clean, "interval": interval, "limit": limit}
+  params = {'symbol': symbol_clean, 'interval': interval, 'limit': limit}
 
   if start_time:
     try:
-      params["startTime"] = int(float(start_time))
+      params['startTime'] = int(float(start_time))
     except Exception as e:
-      print(f"Timestamp err: {e}")
+      print(f'Timestamp conversion error: {e}')
 
-  # Binance Endpoints
+  # Endpoints Priority: 1. Binance Vision Data API, 2. Futures API
   endpoints = [
-      "https://fapi.binance.com/fapi/v1/klines",
-      "https://api.binance.com/api/v3/klines",
-      "https://api1.binance.com/api/v3/klines",
+      BINANCE_SPOT_URL,
+      'https://fapi.binance.com/fapi/v1/klines',
+      'https://api.binance.com/api/v3/klines',
   ]
 
   for url in endpoints:
@@ -202,61 +221,33 @@ def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
           df = pd.DataFrame(
               data,
               columns=[
-                  "open_time",
-                  "open",
-                  "high",
-                  "low",
-                  "close",
-                  "volume",
-                  "close_time",
-                  "quote_volume",
-                  "trades",
-                  "taker_buy_base",
-                  "taker_buy_quote",
-                  "ignore",
+                  'open_time',
+                  'open',
+                  'high',
+                  'low',
+                  'close',
+                  'volume',
+                  'close_time',
+                  'quote_volume',
+                  'trades',
+                  'taker_buy_base',
+                  'taker_buy_quote',
+                  'ignore',
               ],
           )
-          cols = ["open", "high", "low", "close", "volume"]
+          cols = ['open', 'high', 'low', 'close', 'volume']
           df[cols] = df[cols].astype(float)
-          df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+          df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
           return df
-    except Exception:
-      continue
+    except Exception as e:
+      print(f'Kline fetch exception on {url}: {e}')
 
-  # FALLBACK: Bybit Kline Data if Binance completely blocks runner IP
-  try:
-    bybit_interval_map = {"1m": "1", "5m": "5", "15m": "15", "1h": "60"}
-    b_tf = bybit_interval_map.get(interval, "1")
-    bybit_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_clean}&interval={b_tf}&limit={limit}"
-
-    res = requests.get(bybit_url, headers=headers, timeout=6)
-    if res.status_code == 200:
-      raw_list = res.json().get("result", {}).get("list", [])
-      if raw_list:
-        # Bybit returns reversed time order [timestamp, open, high, low, close, volume, turnOver]
-        raw_list.reverse()
-        df = pd.DataFrame(
-            raw_list,
-            columns=[
-                "open_time",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "turnover",
-            ],
-        )
-        cols = ["open", "high", "low", "close", "volume"]
-        df[cols] = df[cols].astype(float)
-        df["open_time"] = pd.to_datetime(
-            df["open_time"].astype(float), unit="ms"
-        )
-        return df
-  except Exception as e:
-    print(f"Bybit fallback error: {e}")
+  # Retry once without start_time if time filter produced empty data
+  if start_time is not None:
+    return fetch_binance_klines(symbol, interval=interval, limit=limit)
 
   return None
+
 
 
 
