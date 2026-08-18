@@ -24,6 +24,9 @@ BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
 
 BINANCE_FEE_RATE = 0.00075
 
+# Trade Closing & Break-Even Alerts Target Topic
+EVENT_ALERT_TOPIC = 'events_hit_hdhdhe'
+
 
 # =========================================================
 # 🛠️ DATABASE INITIALIZER (AUTOMATIC TABLE CREATION)
@@ -165,6 +168,116 @@ def get_db_connection():
 
 
 # =========================================================
+# 💾 DATABASE HELPER FUNCTIONS
+# =========================================================
+def update_sl_in_db(trade_id, new_sl):
+  """Updates Stop-Loss price in MySQL / SQLite database."""
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
+  ph = '%s' if db_type == 'MYSQL' else '?'
+
+  cursor.execute(
+      f'UPDATE trades SET sl_price = {ph} WHERE id = {ph}',
+      (new_sl, trade_id),
+  )
+  conn.commit()
+  conn.close()
+
+
+# =========================================================
+# 🛡️ DYNAMIC USDT-BASED MULTI-LEVEL TRAILING ENGINE
+# =========================================================
+def check_trailing_and_breakeven(trade, current_price):
+  """Multi-Level USDT Lock Logic:
+
+  1. Profit >= +0.15 USDT -> SL locked at +0.05 USDT
+  2. Profit >= +0.30 USDT -> SL locked at +0.15 USDT
+  3. Profit >= +1.00 USDT -> SL locked at +0.50 USDT
+  """
+  entry = trade['entry_price']
+  sl = trade['sl_price']
+  direction = trade['direction'].upper()
+  t_id = trade['id']
+  symbol = trade.get('symbol', '')
+  pos_val = trade.get('pos_value', 0.0)
+
+  if pos_val <= 0 or entry <= 0:
+    return sl
+
+  updated = False
+  new_sl = sl
+  locked_profit = 0.0
+
+  if direction in ['LONG', 'BUY']:
+    current_pnl_usdt = pos_val * ((current_price - entry) / entry)
+
+    if current_pnl_usdt >= 1.00:
+      target_sl = entry * (1 + (0.50 / pos_val))
+      locked_profit = 0.50
+    elif current_pnl_usdt >= 0.30:
+      target_sl = entry * (1 + (0.15 / pos_val))
+      locked_profit = 0.15
+    elif current_pnl_usdt >= 0.15:
+      target_sl = entry * (1 + (0.05 / pos_val))
+      locked_profit = 0.05
+    else:
+      target_sl = sl
+
+    if target_sl > sl:
+      new_sl = target_sl
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(
+          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+      )
+
+  elif direction in ['SHORT', 'SELL']:
+    current_pnl_usdt = pos_val * ((entry - current_price) / entry)
+
+    if current_pnl_usdt >= 1.00:
+      target_sl = entry * (1 - (0.50 / pos_val))
+      locked_profit = 0.50
+    elif current_pnl_usdt >= 0.30:
+      target_sl = entry * (1 - (0.15 / pos_val))
+      locked_profit = 0.15
+    elif current_pnl_usdt >= 0.15:
+      target_sl = entry * (1 - (0.05 / pos_val))
+      locked_profit = 0.05
+    else:
+      target_sl = sl
+
+    if sl == 0 or target_sl < sl:
+      new_sl = target_sl
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(
+          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+      )
+
+  if updated:
+    msg = f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} USDT) FOR TRADE #{t_id}\n'
+    msg += '───────────────────────────\n'
+    msg += f'📌 Symbol    : {symbol} [{direction}]\n'
+    msg += f'📍 Entry     : ${entry:.5f}\n'
+    msg += f'🛡️ Locked SL : ${new_sl:.5f}\n'
+    msg += f'💵 Peak PnL  : +${current_pnl_usdt:.2f} USDT\n'
+    msg += '───────────────────────────'
+
+    send_ntfy_notification(
+        title=f'🛡️ Profit Locked (+${locked_profit:.2f} USDT): {symbol}',
+        message_body=msg,
+        tags=['shield', 'moneybag'],
+        topic=EVENT_ALERT_TOPIC,
+    )
+
+  return new_sl
+
+
+# =========================================================
 # 📲 NTFY NOTIFICATION ENGINE
 # =========================================================
 def get_ntfy_topic():
@@ -179,10 +292,13 @@ def get_ntfy_topic():
 
 
 def send_ntfy_notification(
-    title, message_body, tags=['chart_with_upwards_trend', 'moneybag']
+    title,
+    message_body,
+    tags=['chart_with_upwards_trend', 'moneybag'],
+    topic=None,
 ):
-  topic = get_ntfy_topic()
-  ntfy_url = f'https://ntfy.sh/{topic}'
+  target_topic = topic if topic else get_ntfy_topic()
+  ntfy_url = f'https://ntfy.sh/{target_topic}'
 
   clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
   if not clean_title:
@@ -190,7 +306,7 @@ def send_ntfy_notification(
 
   headers = {
       'Title': clean_title,
-      'Priority': 'default',
+      'Priority': 'high' if topic == EVENT_ALERT_TOPIC else 'default',
       'Tags': ','.join(tags),
   }
 
@@ -199,11 +315,45 @@ def send_ntfy_notification(
         ntfy_url, data=message_body.encode('utf-8'), headers=headers, timeout=10
     )
     if res.status_code == 200:
-      print(f'🚀 Ntfy notification successfully sent to topic: {topic}')
+      print(f'🚀 Ntfy notification successfully sent to topic: {target_topic}')
     else:
       print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
   except Exception as e:
     print(f'❌ Ntfy Request Exception: {e}')
+
+
+def send_trade_event_notification(
+    trade_id, symbol, direction, close_reason, margin, exit_amount, net_pnl
+):
+  pnl_icon = '🟢' if net_pnl >= 0 else '🔻'
+  pnl_sign = '+' if net_pnl >= 0 else ''
+
+  reason_text_map = {
+      'CLOSED_SL': '🚫 STOP LOSS HIT',
+      'CLOSED_TP1': '🎯 TAKE PROFIT 1 HIT',
+      'CLOSED_TP2': '🎯 TAKE PROFIT 2 HIT',
+      'CLOSED_24H_PROFIT': '⏳ 24H TIME PROFIT HIT',
+  }
+  formatted_reason = reason_text_map.get(close_reason, close_reason)
+
+  msg = f'🚨 TRADE CLOSED BREAKDOWN #{trade_id}\n'
+  msg += '───────────────────────────\n'
+  msg += f'📌 Symbol       : {symbol} [{direction}]\n'
+  msg += f'📝 Close Reason : {formatted_reason}\n'
+  msg += f'💰 Start Margin : ${margin:.2f} USDT\n'
+  msg += f'🚪 Exit Amount  : ${exit_amount:.2f} USDT\n'
+  msg += f'📊 Net PnL      : {pnl_icon} {pnl_sign}${net_pnl:.2f} USDT\n'
+  msg += '───────────────────────────'
+
+  title = f'🔔 Trade Closed: {symbol} ({formatted_reason})'
+  tags = ['warning', 'checkered_flag'] if net_pnl < 0 else ['rocket', 'moneybag']
+
+  send_ntfy_notification(
+      title=title,
+      message_body=msg,
+      tags=tags,
+      topic=EVENT_ALERT_TOPIC,
+  )
 
 
 # =========================================================
@@ -371,6 +521,15 @@ def process_active_trades():
     status = 'ACTIVE'
     gross_pnl = 0.0
 
+    trade_dict = {
+        'id': t_id,
+        'symbol': symbol,
+        'direction': direction,
+        'entry_price': entry_p,
+        'sl_price': sl_p,
+        'pos_value': pos_val,
+    }
+
     for idx, row in df.iterrows():
       c_time_ms = row['time']
       c_open, c_high, c_low, c_close = (
@@ -380,6 +539,10 @@ def process_active_trades():
           row['close'],
       )
       time_elapsed_seconds = (c_time_ms - start_ms) / 1000.0
+
+      # Dynamic Multi-Level Trailing Check
+      check_p = c_high if direction == 'LONG' else c_low
+      sl_p = check_trailing_and_breakeven(trade_dict, check_p)
 
       if direction == 'LONG':
         if c_close >= c_open:
@@ -469,6 +632,7 @@ def process_active_trades():
       exit_value = max(0, pos_val + gross_pnl)
       exit_fee = exit_value * BINANCE_FEE_RATE
       net_pnl = gross_pnl - (entry_fee + exit_fee)
+      exit_amount = margin + net_pnl
 
       cursor.execute(
           f'UPDATE trades SET status = {ph}, pnl = {ph} WHERE id = {ph}',
@@ -487,6 +651,17 @@ def process_active_trades():
       print(
           f'   🔔 TRADE CLOSED: Trade #{t_id} [{symbol}] via {status} | Net'
           f' PnL: ${net_pnl:+.2f}'
+      )
+
+      # Send Event Breakdown Notification
+      send_trade_event_notification(
+          trade_id=t_id,
+          symbol=symbol,
+          direction=direction,
+          close_reason=status,
+          margin=margin,
+          exit_amount=exit_amount,
+          net_pnl=net_pnl,
       )
 
   conn.close()
