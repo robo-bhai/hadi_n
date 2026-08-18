@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card card-custom p-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="fw-bold text-info mb-0 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left"></i> Closed Execution Audit Log
+        </h5>
+        <span class="badge bg-dark border border-secondary text-muted">Historical Data</span>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-dark table-hover align-middle mb-0">
+            <thead>
+                <tr class="text-muted fs-7 text-uppercase border-bottom border-secondary">
+                    <th>Trade ID</th>
+                    <th>Asset Symbol</th>
+                    <th>Direction</th>
+                    <th>Margin Used</th>
+                    <th>Position Size</th>
+                    <th>Execution Status</th>
+                    <th class="text-end">Realized PnL</th>
+                </tr>
+            </thead>
+            <tbody class="mono-font fs-6">
+                {% for t in trades %}
+                <tr>
+                    <td class="text-muted fw-normal">#{{ t.info.id }}</td>
+                    <td class="fw-bold text-light fs-6">{{ t.info.symbol }}</td>
+                    <td>
+                        <span class="badge {% if t.info.direction == 'LONG' %}badge-long{% else %}badge-short{% endif %}">
+                            {{ t.info.direction }}
+                        </span>
+                    </td>
+                    <td>${{ t.info.margin_frozen }} <span class="fs-7 text-muted">USDT</span></td>
+                    <td>${{ t.info.pos_value }} <span class="fs-7 text-muted">USDT</span></td>
+                    <td>
+                        <span class="badge bg-dark border border-secondary text-light fw-normal px-2 py-1">
+                            {{ t.status }}
+                        </span>
+                    </td>
+                    <td class="text-end fw-bold {% if t.pnl >= 0 %}pnl-positive{% else %}pnl-negative{% endif %}">
+                        {% if t.pnl >= 0 %}+{% endif %}${{ t.pnl }} USDT
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}

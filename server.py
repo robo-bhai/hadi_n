@@ -1,21 +1,17 @@
-import os
-import io
 import base64
-import time
+from datetime import datetime, timezone
+import io
+import os
 import ssl
-import requests
+from flask import Flask, jsonify, render_template, request
+import mysql.connector
 import pandas as pd
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')  # Non-GUI backend
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from flask import Flask, render_template, jsonify
+import requests
 
 app = Flask(__name__)
 
 # =========================================================
-# 🔑 CREDENTIALS FROM ENVIRONMENT (GITHUB SECRETS)
+# 🔑 EXACT DB CREDENTIALS & CONNECTION SETTINGS
 # =========================================================
 DB_HOST = os.getenv("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
 DB_USER = os.getenv("DB_USER", "avnadmin")
@@ -23,196 +19,397 @@ DB_PASS = os.getenv("DB_PASS", "")  # Read from GitHub Secret DB_PASS
 DB_NAME = os.getenv("DB_NAME", "defaultdb")
 DB_PORT = int(os.getenv("DB_PORT", "23464"))
 
-# =========================================================
-# 🔌 MYSQL CONNECTION
-# =========================================================
+
 def get_db_connection():
-    try:
-        import mysql.connector
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASS,
-            database=DB_NAME,
-            ssl_context=ssl_ctx,
-            connect_timeout=20
-        )
-        return conn
-    except Exception as e:
-        print(f"⚠️ Primary SSL Connection Failed: {e}")
-        try:
-            import mysql.connector
-            conn = mysql.connector.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                user=DB_USER,
-                password=DB_PASS,
-                database=DB_NAME,
-                ssl_disabled=False,
-                ssl_verify_cert=False,
-                connect_timeout=20
-            )
-            return conn
-        except Exception as err:
-            print(f"❌ MySQL Connection Error: {err}")
-            return None
-
-# =========================================================
-# 📊 TECHNICAL INDICATORS & MARKET FETCHERS
-# =========================================================
-def fetch_klines(symbol, interval="4h", limit=80):
-    url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    try:
-        res = requests.get(url, timeout=6)
-        if res.status_code == 200:
-            df = pd.DataFrame(res.json(), columns=['time', 'open', 'high', 'low', 'close', 'volume', '_', '_', '_', '_', '_', '_'])
-            df['time'] = pd.to_datetime(df['time'], unit='ms')
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = df[col].astype(float)
-            return df
-    except Exception as e:
-        print(f"❌ Error fetching KLines for {symbol}: {e}")
+  print("⏳ Connecting to Aiven MySQL Database...")
+  try:
+    conn = mysql.connector.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        ssl_disabled=False,  # Aiven ke liye SSL zaroori hai
+        connect_timeout=20,
+    )
+    print("✅ Connected Successfully!")
+    return conn
+  except Exception as err:
+    print(f"❌ MySQL Connection Error: {err}")
     return None
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    loss = loss.replace(0, 0.00001)
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
 
 # =========================================================
-# 🎨 CHART PLOTTER
+# 📊 BINANCE API HELPERS
 # =========================================================
-def generate_trade_chart(df, trade):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
-    fig.patch.set_facecolor('#0f172a')
-    ax1.set_facecolor('#1e293b')
-    ax2.set_facecolor('#1e293b')
+def fetch_binance_klines(symbol, interval="1m", limit=300, start_time=None):
+  symbol = symbol.replace("/", "").upper()
+  if not symbol.endswith("USDT"):
+    symbol += "USDT"
 
-    for idx, row in df.iterrows():
-        color = '#22c55e' if row['close'] >= row['open'] else '#ef4444'
-        ax1.plot([row['time'], row['time']], [row['low'], row['high']], color=color, linewidth=1.2)
-        height = abs(row['close'] - row['open'])
-        bottom = min(row['open'], row['close'])
-        ax1.bar(row['time'], height if height > 0 else 0.0001, bottom=bottom, color=color, width=0.08, align='center')
+  url = "https://fapi.binance.com/fapi/v1/klines"
+  params = {"symbol": symbol, "interval": interval, "limit": limit}
+  if start_time:
+    params["startTime"] = int(start_time)
 
-    recent_20 = df.tail(20)
-    sup_level = recent_20['low'].min()
-    res_level = recent_20['high'].max()
+  try:
+    res = requests.get(url, params=params, timeout=8)
+    data = res.json()
+    if not isinstance(data, list):
+      return None
 
-    ax1.axhline(res_level, color='#a855f7', linestyle='--', linewidth=1.5, label=f'Resistance: ${res_level:.4f}')
-    ax1.axhline(sup_level, color='#06b6d4', linestyle='--', linewidth=1.5, label=f'Support: ${sup_level:.4f}')
+    df = pd.DataFrame(
+        data,
+        columns=[
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_volume",
+            "trades",
+            "taker_buy_base",
+            "taker_buy_quote",
+            "ignore",
+        ],
+    )
+    cols = ["open", "high", "low", "close", "volume"]
+    df[cols] = df[cols].astype(float)
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    return df
+  except Exception as e:
+    print(f"⚠️ Binance Kline Error for {symbol}: {e}")
+    return None
 
-    entry = float(trade['entry_price'])
-    sl = float(trade['sl_price'])
-    tp1 = float(trade['tp1_price'])
-    tp2 = float(trade['tp2_price'])
 
-    ax1.axhline(entry, color='#3b82f6', linestyle='-', linewidth=2, label=f'Entry: ${entry:.4f}')
-    ax1.axhline(sl, color='#f43f5e', linestyle='-.', linewidth=2, label=f'SL: ${sl:.4f}')
-    ax1.axhline(tp1, color='#10b981', linestyle=':', linewidth=2, label=f'TP1: ${tp1:.4f}')
-    ax1.axhline(tp2, color='#059669', linestyle=':', linewidth=2, label=f'TP2: ${tp2:.4f}')
+def fetch_live_price(symbol):
+  symbol = symbol.replace("/", "").upper()
+  if not symbol.endswith("USDT"):
+    symbol += "USDT"
 
-    last_time = df['time'].iloc[-1]
-    ax1.annotate(f"ENTRY ({trade['direction']})", xy=(last_time, entry), 
-                 xytext=(last_time, entry * 1.02 if trade['direction'] == 'LONG' else entry * 0.98),
-                 arrowprops=dict(facecolor='#3b82f6', edgecolor='#3b82f6', shrink=0.05, width=2, headwidth=8),
-                 fontsize=10, fontweight='bold', color='#ffffff', ha='center',
-                 bbox=dict(boxstyle="round,pad=0.3", fc="#1e3a8a", ec="#3b82f6", lw=1))
+  url = "https://fapi.binance.com/fapi/v1/ticker/price"
+  try:
+    res = requests.get(url, params={"symbol": symbol}, timeout=5)
+    data = res.json()
+    return float(data.get("price", 0.0))
+  except Exception:
+    return 0.0
 
-    ax1.set_title(f"PRO ANALYST CHART: {trade['symbol']} ({trade['direction']}) | Leverage: {trade['leverage']}x", fontsize=14, fontweight='bold', color='#f8fafc', pad=12)
-    ax1.grid(True, color='#334155', linestyle=':', alpha=0.6)
-    ax1.legend(loc='upper left', facecolor='#0f172a', edgecolor='#334155', labelcolor='#f8fafc', fontsize=9)
-    ax1.tick_params(colors='#94a3b8')
-
-    colors_vol = ['#22c55e' if c >= o else '#ef4444' for c, o in zip(df['close'], df['open'])]
-    ax2.bar(df['time'], df['volume'], color=colors_vol, width=0.08, alpha=0.7)
-    ax2.set_ylabel('Volume', color='#94a3b8', fontsize=10)
-    ax2.grid(True, color='#334155', linestyle=':', alpha=0.6)
-    ax2.tick_params(colors='#94a3b8')
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-
-    plt.xticks(rotation=20)
-    plt.tight_layout()
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor=fig.get_facecolor(), edgecolor='none')
-    buf.seek(0)
-    img_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-    plt.close(fig)
-    return img_b64
 
 # =========================================================
-# 🌐 ROUTES
+# 🧠 SL DIAGNOSTIC POST-MORTEM ENGINE
 # =========================================================
-@app.route('/')
-def index():
-    return render_template('live_sql.html')
+def analyze_sl_trade(trade, df):
+  direction = str(trade.get("direction", "LONG")).upper()
+  entry = float(trade.get("entry_price", 0.0))
+  sl = float(trade.get("sl_price", 0.0))
 
-@app.route('/api/active_trades')
-def api_active_trades():
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({"status": "error", "message": "Database Connection Failed"}), 500
+  total_candles = len(df) if df is not None else 0
+  if total_candles < 2:
+    return {
+        "max_favorable": 0.0,
+        "max_adverse": 0.0,
+        "vol_spike": 1.0,
+        "reasons": ["Insufficient kline data."],
+        "win_solutions": [
+            "Ensure candles exist in Binance API for this duration."
+        ],
+    }
 
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
-    trades = cursor.fetchall()
+  delta = df["close"].diff()
+  gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+  loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+  rs = gain / loss
+  df["rsi"] = 100 - (100 / (1 + rs))
 
-    cursor.execute("SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = 1")
-    portfolio = cursor.fetchone()
-    conn.close()
+  tr = (
+      pd.concat(
+          [
+              df["high"] - df["low"],
+              (df["high"] - df["close"].shift()).abs(),
+              (df["low"] - df["close"].shift()).abs(),
+          ],
+          axis=1,
+      )
+      .max(axis=1)
+      .rolling(window=14)
+      .mean()
+  )
+  df["atr"] = tr
 
-    parsed_trades = []
-    for trade in trades:
-        symbol = trade['symbol']
-        df = fetch_klines(symbol, interval="4h", limit=80)
+  max_high = df["high"].max()
+  min_low = df["low"].min()
+  avg_vol = df["volume"].mean()
+  max_vol = df["volume"].max()
 
-        if df is not None:
-            live_price = float(df['close'].iloc[-1])
-            df['RSI'] = calculate_rsi(df['close'])
-            df['ATR'] = calculate_atr(df)
+  if direction in ["LONG", "BUY"]:
+    max_favorable = ((max_high - entry) / entry) * 100 if entry > 0 else 0
+    max_adverse = ((entry - min_low) / entry) * 100 if entry > 0 else 0
+  else:
+    max_favorable = ((entry - min_low) / entry) * 100 if entry > 0 else 0
+    max_adverse = ((max_high - entry) / entry) * 100 if entry > 0 else 0
 
-            entry = float(trade['entry_price'])
-            qty = float(trade['coin_qty'])
-            margin = float(trade['margin_frozen'])
+  reasons = []
+  win_solutions = []
 
-            pnl_usdt = (live_price - entry) * qty if trade['direction'] == 'LONG' else (entry - live_price) * qty
-            pnl_pct = (pnl_usdt / margin) * 100 if margin > 0 else 0.0
+  atr_val = df["atr"].dropna().iloc[0] if not df["atr"].dropna().empty else 0
+  sl_dist = abs(entry - sl)
 
-            chart_b64 = generate_trade_chart(df, trade)
+  if atr_val > 0 and sl_dist < (atr_val * 1.2):
+    reasons.append(
+        "⚠️ **Tight SL**: Stop Loss distance was within normal ATR noise range."
+    )
+  if max_vol > (avg_vol * 3.5):
+    reasons.append(
+        "⚡ **Liquidity Sweep**: Sudden high volume spike hit SL before"
+        " movement."
+    )
+  if max_favorable >= 0.3:
+    reasons.append(
+        f"🔄 **Reversal / Greed**: Trade was up +{max_favorable:.2f}% before"
+        " reversing to SL."
+    )
 
-            parsed_trades.append({
-                "trade_info": trade,
-                "live_price": live_price,
-                "pnl_usdt": round(pnl_usdt, 2),
-                "pnl_pct": round(pnl_pct, 2),
-                "rsi": round(float(df['RSI'].iloc[-1]), 2),
-                "atr": round(float(df['ATR'].iloc[-1]), 4),
-                "volume": round(float(df['volume'].iloc[-1]), 2),
-                "chart": chart_b64
-            })
+  if not reasons:
+    reasons.append(
+        "📊 Higher Timeframe market trend or momentum hit the Stop Loss."
+    )
 
-    return jsonify({
-        "status": "success",
-        "portfolio": portfolio,
-        "trades": parsed_trades
+  if max_favorable >= 0.3:
+    win_tp = entry * (
+        1 + (max_favorable * 0.85 / 100)
+        if direction in ["LONG", "BUY"]
+        else 1 - (max_favorable * 0.85 / 100)
+    )
+    win_solutions.append(
+        f"🎯 Set Micro-TP Target at +{max_favorable*0.8:.2f}% (Price:"
+        f" ${win_tp:.5f})."
+    )
+    win_solutions.append(
+        "🛡️ Enable Auto Break-Even (BE) when trade reaches +0.35% profit."
+    )
+  else:
+    win_solutions.append(
+        "⛔ Filter out using 15m/1h Higher Timeframe EMA Trend Alignment."
+    )
+
+  return {
+      "max_favorable": max_favorable,
+      "max_adverse": max_adverse,
+      "vol_spike": max_vol / avg_vol if avg_vol > 0 else 1.0,
+      "reasons": reasons,
+      "win_solutions": win_solutions,
+  }
+
+
+# =========================================================
+# 🌐 ROUTES & VIEW CONTROLLERS
+# =========================================================
+
+
+@app.route("/")
+@app.route("/portfolio")
+def tab_portfolio():
+  conn = get_db_connection()
+  if not conn:
+    return "Database Connection Failed. Check server logs."
+
+  cursor = conn.cursor(dictionary=True)
+
+  cursor.execute("SELECT * FROM portfolio WHERE id = 1")
+  port = cursor.fetchone() or {
+      "total_capital": 100.0,
+      "available_capital": 100.0,
+      "frozen_margin": 0.0,
+  }
+
+  cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
+  active_trades = cursor.fetchall()
+
+  cursor.execute("SELECT * FROM trades WHERE status != 'ACTIVE'")
+  closed_trades = cursor.fetchall()
+
+  total_floating_pnl = 0.0
+  active_margin = 0.0
+
+  for t in active_trades:
+    live_p = fetch_live_price(t["symbol"])
+    entry = float(t["entry_price"])
+    pos_val = float(t["pos_value"])
+    margin = float(t["margin_frozen"])
+    active_margin += margin
+
+    if str(t["direction"]).upper() in ["LONG", "BUY"]:
+      float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
+    else:
+      float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+
+    total_floating_pnl += float_pnl
+
+  closed_realized_pnl = sum(float(t["pnl"] or 0.0) for t in closed_trades)
+  loss_trades_capital = sum(
+      abs(float(t["pnl"])) for t in closed_trades if float(t["pnl"] or 0.0) < 0
+  )
+
+  avail_cap = float(port["available_capital"])
+  freezed_bal = float(port["frozen_margin"])
+
+  # Stated Capital Calculation
+  stated_capital = avail_cap + active_margin + loss_trades_capital
+  total_overall_balance = float(port["total_capital"]) + total_floating_pnl
+  live_roi = (
+      ((total_overall_balance - stated_capital) / stated_capital) * 100
+      if stated_capital > 0
+      else 0.0
+  )
+
+  conn.close()
+
+  data = {
+      "stated_capital": round(stated_capital, 2),
+      "available_capital": round(avail_cap, 2),
+      "freezed_balance": round(freezed_bal, 2),
+      "active_margin": round(active_margin, 2),
+      "total_active": len(active_trades),
+      "total_closed": len(closed_trades),
+      "floating_pnl": round(total_floating_pnl, 2),
+      "realized_pnl": round(closed_realized_pnl, 2),
+      "live_roi": round(live_roi, 2),
+      "total_overall_balance": round(total_overall_balance, 2),
+  }
+  return render_template("portfolio.html", p=data)
+
+
+@app.route("/active")
+def tab_active_trades():
+  conn = get_db_connection()
+  if not conn:
+    return "Database Connection Failed."
+
+  cursor = conn.cursor(dictionary=True)
+  cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
+  trades = cursor.fetchall()
+  conn.close()
+
+  parsed_trades = []
+  for t in trades:
+    live_p = fetch_live_price(t["symbol"])
+    entry = float(t["entry_price"])
+    sl = float(t["sl_price"])
+    tp1 = float(t["tp1_price"])
+    margin = float(t["margin_frozen"])
+    pos_val = float(t["pos_value"])
+
+    direction = str(t["direction"]).upper()
+    if direction in ["LONG", "BUY"]:
+      pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
+      if live_p >= entry and tp1 > entry:
+        tp_progress = min(100, max(0, ((live_p - entry) / (tp1 - entry)) * 100))
+        sl_progress = 0
+      elif live_p < entry and entry > sl:
+        sl_progress = min(100, max(0, ((entry - live_p) / (entry - sl)) * 100))
+        tp_progress = 0
+      else:
+        tp_progress = sl_progress = 0
+    else:
+      pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+      if live_p <= entry and entry > tp1:
+        tp_progress = min(100, max(0, ((entry - live_p) / (entry - tp1)) * 100))
+        sl_progress = 0
+      elif live_p > entry and sl > entry:
+        sl_progress = min(100, max(0, ((live_p - entry) / (sl - entry)) * 100))
+        tp_progress = 0
+      else:
+        tp_progress = sl_progress = 0
+
+    pnl_pct = (pnl_usdt / margin) * 100 if margin > 0 else 0.0
+
+    parsed_trades.append({
+        "info": t,
+        "live_price": live_p,
+        "pnl_usdt": round(pnl_usdt, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "tp_progress": round(tp_progress, 1),
+        "sl_progress": round(sl_progress, 1),
     })
 
-if __name__ == '__main__':
-    port = int(os.getenv("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+  return render_template("active_trades.html", trades=parsed_trades)
+
+
+@app.route("/closed")
+def tab_closed_trades():
+  conn = get_db_connection()
+  if not conn:
+    return "Database Connection Failed."
+
+  cursor = conn.cursor(dictionary=True)
+  cursor.execute(
+      "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id DESC"
+  )
+  trades = cursor.fetchall()
+  conn.close()
+
+  parsed_trades = []
+  for t in trades:
+    parsed_trades.append({
+        "info": t,
+        "pnl": round(float(t["pnl"] or 0.0), 2),
+        "status": t["status"],
+    })
+
+  return render_template("closed_trades.html", trades=parsed_trades)
+
+
+@app.route("/sl-analysis")
+def tab_sl_analysis():
+  conn = get_db_connection()
+  if not conn:
+    return "Database Connection Failed."
+
+  cursor = conn.cursor(dictionary=True)
+  cursor.execute(
+      "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id DESC"
+  )
+  sl_trades = cursor.fetchall()
+  conn.close()
+
+  analyzed_list = []
+  for t in sl_trades:
+    entry_time = t["timestamp"]
+    if isinstance(entry_time, str):
+      entry_time = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
+
+    start_ms = entry_time.replace(tzinfo=timezone.utc).timestamp() * 1000
+    df = fetch_binance_klines(
+        t["symbol"], interval="1m", limit=500, start_time=start_ms
+    )
+    analysis = analyze_sl_trade(t, df)
+
+    analyzed_list.append({"trade": t, "analysis": analysis})
+
+  return render_template("sl_analysis.html", trades=analyzed_list)
+
+
+@app.route("/api/kline")
+def api_kline():
+  symbol = request.args.get("symbol", "BTCUSDT")
+  tf = request.args.get("tf", "1m")
+  df = fetch_binance_klines(symbol, interval=tf, limit=150)
+
+  if df is None or df.empty:
+    return jsonify({"error": "Failed to fetch kline data"}), 400
+
+  result = {
+      "times": df["open_time"].dt.strftime("%Y-%m-%d %H:%M").tolist(),
+      "open": df["open"].tolist(),
+      "high": df["high"].tolist(),
+      "low": df["low"].tolist(),
+      "close": df["close"].tolist(),
+  }
+  return jsonify(result)
+
+
+if __name__ == "__main__":
+  app.run(host="0.0.0.0", port=5000, debug=True)
