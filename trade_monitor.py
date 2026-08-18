@@ -107,7 +107,7 @@ def update_sl_in_db(trade_id, new_sl):
 def check_trailing_and_breakeven(trade, current_price):
   """Multi-Level USDT Lock Logic:
 
-  1. Profit >= +0.15 USDT -> SL locked at +0.05 USDT
+  1. Profit >= +0.15 USDT -> SL locked at +0.1 USDT
   2. Profit >= +0.30 USDT -> SL locked at +0.15 USDT
   3. Profit >= +1.00 USDT -> SL locked at +0.50 USDT
   """
@@ -136,7 +136,7 @@ def check_trailing_and_breakeven(trade, current_price):
       target_sl = entry * (1 + (0.15 / pos_val))
       locked_profit = 0.15
     elif current_pnl_usdt >= 0.15:
-      target_sl = entry * (1 + (0.05 / pos_val))
+      target_sl = entry * (1 + (0.1 / pos_val))
       locked_profit = 0.05
     else:
       target_sl = sl
