@@ -364,74 +364,7 @@ def fetch_full_trade_klines(symbol, start_time_ms):
 # =========================================================
 # 🛡️ AUTO BREAK-EVEN (BE) ENGINE (NEW ADDITION)
 # =========================================================
-def check_and_apply_breakeven(conn, cursor, db_type, pos, current_price):
-    """
-    Jab trade +0.35% profit touch kare, to Stop Loss Entry Price (+ Taker Fee Buffer) par shift kar do.
-    """
-    pos_id = pos['id']
-    symbol = pos['symbol']
-    direction = pos['direction']
-    entry_price = pos['entry_price']
-    current_sl = pos['sl_price']
-    
-    # 0.08% Fee buffer so trade closes with 0 loss after Binance taker fees
-    fee_buffer = 0.0008 
 
-    if direction == "LONG":
-        gain_pct = ((current_price - entry_price) / entry_price) * 100
-        target_be_sl = entry_price * (1 + fee_buffer)
-
-        # Conditions: Gain >= 0.35% AND Current SL is still below Break-Even level
-        if gain_pct >= 0.35 and current_sl < target_be_sl:
-            if db_type == 'MYSQL':
-                cursor.execute("UPDATE trades SET sl_price = %s WHERE id = %s", (target_be_sl, pos_id))
-            else:
-                cursor.execute("UPDATE trades SET sl_price = ? WHERE id = ?", (target_be_sl, pos_id))
-            conn.commit()
-
-            print(f"🛡️ [AUTO BREAK-EVEN ACTIVATED] {symbol} (LONG) hit +{gain_pct:.2f}% gain! SL moved to Entry (${fmt_p(target_be_sl)})")
-            
-            # Send Notification
-            send_event_alert(
-                title=f"🛡️ BREAK-EVEN ACTIVATED: {symbol}",
-                body=(
-                    f"🟢 Pair: {symbol} (LONG)\n"
-                    f"📈 Peak Gain: +{gain_pct:.2f}%\n"
-                    f"🛡️ New SL (Break-Even): ${fmt_p(target_be_sl)}\n"
-                    f"💡 Position is now 100% RISK-FREE!"
-                ),
-                tags="shield,lock"
-            )
-            return target_be_sl
-
-    elif direction == "SHORT":
-        gain_pct = ((entry_price - current_price) / entry_price) * 100
-        target_be_sl = entry_price * (1 - fee_buffer)
-
-        # Conditions: Gain >= 0.35% AND Current SL is still above Break-Even level
-        if gain_pct >= 0.35 and current_sl > target_be_sl:
-            if db_type == 'MYSQL':
-                cursor.execute("UPDATE trades SET sl_price = %s WHERE id = %s", (target_be_sl, pos_id))
-            else:
-                cursor.execute("UPDATE trades SET sl_price = ? WHERE id = ?", (target_be_sl, pos_id))
-            conn.commit()
-
-            print(f"🛡️ [AUTO BREAK-EVEN ACTIVATED] {symbol} (SHORT) hit +{gain_pct:.2f}% gain! SL moved to Entry (${fmt_p(target_be_sl)})")
-            
-            # Send Notification
-            send_event_alert(
-                title=f"🛡️ BREAK-EVEN ACTIVATED: {symbol}",
-                body=(
-                    f"🔴 Pair: {symbol} (SHORT)\n"
-                    f"📈 Peak Gain: +{gain_pct:.2f}%\n"
-                    f"🛡️ New SL (Break-Even): ${fmt_p(target_be_sl)}\n"
-                    f"💡 Position is now 100% RISK-FREE!"
-                ),
-                tags="shield,lock"
-            )
-            return target_be_sl
-
-    return current_sl
 
 
 
