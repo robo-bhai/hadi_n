@@ -114,36 +114,88 @@ def get_db_connection():
 # =========================================================
 # 📊 BINANCE API HELPERS
 # =========================================================
-def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
-  symbol = symbol.replace("/", "").upper()
-  if not symbol.endswith("USDT"):
-    symbol += "USDT"
+def fetch_live_price(symbol):
+  symbol_clean = symbol.replace("/", "").upper()
+  if not symbol_clean.endswith("USDT"):
+    symbol_clean += "USDT"
 
-  # Updated Browser User-Agent to bypass Cloudflare on GitHub Runners
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       )
   }
-  params = {"symbol": symbol, "interval": interval, "limit": limit}
+
+  # 1. Binance Direct Endpoints
+  binance_urls = [
+      f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol_clean}",
+      f"https://api.binance.com/api/v3/ticker/price?symbol={symbol_clean}",
+      f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol_clean}",
+  ]
+
+  for url in binance_urls:
+    try:
+      res = requests.get(url, headers=headers, timeout=4)
+      if res.status_code == 200:
+        return float(res.json().get("price", 0.0))
+    except Exception:
+      continue
+
+  # 2. FALLBACK 1: Bybit API (GitHub IPs par rarely block hoti hai)
+  try:
+    bybit_url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol_clean}"
+    res = requests.get(bybit_url, headers=headers, timeout=4)
+    if res.status_code == 200:
+      list_data = res.json().get("result", {}).get("list", [])
+      if list_data:
+        return float(list_data[0].get("lastPrice", 0.0))
+  except Exception:
+    pass
+
+  # 3. FALLBACK 2: MEXC API
+  try:
+    mexc_url = (
+        f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol_clean}"
+    )
+    res = requests.get(mexc_url, headers=headers, timeout=4)
+    if res.status_code == 200:
+      data = res.json().get("data", {})
+      if data and "lastPrice" in data:
+        return float(data["lastPrice"])
+  except Exception:
+    pass
+
+  # Don't send ntfy alert on every single failed tick to avoid spamming ntfy
+  return 0.0
+
+
+def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
+  symbol_clean = symbol.replace("/", "").upper()
+  if not symbol_clean.endswith("USDT"):
+    symbol_clean += "USDT"
+
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
+  params = {"symbol": symbol_clean, "interval": interval, "limit": limit}
 
   if start_time:
     try:
       params["startTime"] = int(float(start_time))
     except Exception as e:
-      print(f"⚠️ Timestamp conversion error for {symbol}: {e}")
+      print(f"Timestamp err: {e}")
 
+  # Binance Endpoints
   endpoints = [
       "https://fapi.binance.com/fapi/v1/klines",
       "https://api.binance.com/api/v3/klines",
       "https://api1.binance.com/api/v3/klines",
-      "https://api3.binance.com/api/v3/klines",
   ]
 
   for url in endpoints:
     try:
-      res = requests.get(url, params=params, headers=headers, timeout=10)
+      res = requests.get(url, params=params, headers=headers, timeout=6)
       if res.status_code == 200:
         data = res.json()
         if isinstance(data, list) and len(data) > 0:
@@ -168,55 +220,44 @@ def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
           df[cols] = df[cols].astype(float)
           df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
           return df
-    except Exception as e:
-      print(f"⚠️ Exception fetching klines for {symbol} on {url}: {e}")
-
-  # FALLBACK: Retry without startTime filter
-  if start_time is not None:
-    print(f"🔄 Retrying {symbol} without startTime filter...")
-    return fetch_binance_klines(symbol, interval=interval, limit=limit)
-
-  send_ntfy_alert(
-      title="Binance Kline Fetch Error",
-      message=f"Failed to pull candle data for {symbol} across all endpoints.",
-      level="warning",
-  )
-  return None
-
-
-def fetch_live_price(symbol):
-  symbol = symbol.replace("/", "").upper()
-  if not symbol.endswith("USDT"):
-    symbol += "USDT"
-
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      )
-  }
-  endpoints = [
-      "https://fapi.binance.com/fapi/v1/ticker/price",
-      "https://api.binance.com/api/v3/ticker/price",
-      "https://api1.binance.com/api/v3/ticker/price",
-  ]
-
-  for url in endpoints:
-    try:
-      res = requests.get(
-          url, params={"symbol": symbol}, headers=headers, timeout=5
-      )
-      if res.status_code == 200:
-        data = res.json()
-        return float(data.get("price", 0.0))
     except Exception:
       continue
 
-  send_ntfy_alert(
-      title="Live Price Fetch Failed",
-      message=f"Could not retrieve live price for {symbol}",
-      level="warning",
-  )
-  return 0.0
+  # FALLBACK: Bybit Kline Data if Binance completely blocks runner IP
+  try:
+    bybit_interval_map = {"1m": "1", "5m": "5", "15m": "15", "1h": "60"}
+    b_tf = bybit_interval_map.get(interval, "1")
+    bybit_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol_clean}&interval={b_tf}&limit={limit}"
+
+    res = requests.get(bybit_url, headers=headers, timeout=6)
+    if res.status_code == 200:
+      raw_list = res.json().get("result", {}).get("list", [])
+      if raw_list:
+        # Bybit returns reversed time order [timestamp, open, high, low, close, volume, turnOver]
+        raw_list.reverse()
+        df = pd.DataFrame(
+            raw_list,
+            columns=[
+                "open_time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "turnover",
+            ],
+        )
+        cols = ["open", "high", "low", "close", "volume"]
+        df[cols] = df[cols].astype(float)
+        df["open_time"] = pd.to_datetime(
+            df["open_time"].astype(float), unit="ms"
+        )
+        return df
+  except Exception as e:
+    print(f"Bybit fallback error: {e}")
+
+  return None
+
 
 
 # =========================================================
