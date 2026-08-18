@@ -24,7 +24,7 @@ BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
 
 BINANCE_FEE_RATE = 0.00075
 
-# Trade Closing Alerts Target Topic
+# Trade Closing & Break-Even Alerts Target Topic
 EVENT_ALERT_TOPIC = 'events_hit_hdhdhe'
 
 
@@ -76,6 +76,79 @@ def get_db_connection():
 
   conn = sqlite3.connect('trading_system.db')
   return conn, 'SQLITE'
+
+
+# =========================================================
+# 💾 DATABASE HELPER FUNCTIONS
+# =========================================================
+def update_sl_in_db(trade_id, new_sl):
+  """Updates Stop-Loss price in the MySQL / SQLite database."""
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
+  ph = '%s' if db_type == 'MYSQL' else '?'
+
+  cursor.execute(
+      f'UPDATE trades SET sl_price = {ph} WHERE id = {ph}',
+      (new_sl, trade_id),
+  )
+  conn.commit()
+  conn.close()
+
+
+# =========================================================
+# 🛡️ TRAILING & BREAK-EVEN MONITORING ENGINE
+# =========================================================
+def check_trailing_and_breakeven(trade, current_price):
+  """
+  Real-time monitoring for active trades.
+  If profit hits +0.35% or higher, moves SL to Break-Even (Entry + 0.05% fee buffer)
+  and triggers a notification on EVENT_ALERT_TOPIC.
+  """
+  entry = trade['entry_price']
+  sl = trade['sl_price']
+  direction = trade['direction'].upper()
+  t_id = trade['id']
+  symbol = trade.get('symbol', '')
+
+  updated = False
+  new_sl = sl
+
+  if direction in ['LONG', 'BUY']:
+    profit_pct = ((current_price - entry) / entry) * 100
+    # If profit hits +0.35% or higher, move SL to Break-Even (Entry + 0.05% Exchange fee)
+    if profit_pct >= 0.35 and sl < entry:
+      new_sl = entry * 1.0005
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(f'🛡️ [BREAK-EVEN LOCKED] Trade #{t_id} SL moved to {new_sl:.5f}')
+
+  elif direction in ['SHORT', 'SELL']:
+    profit_pct = ((entry - current_price) / entry) * 100
+    if profit_pct >= 0.35 and sl > entry:
+      new_sl = entry * 0.9995
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(f'🛡️ [BREAK-EVEN LOCKED] Trade #{t_id} SL moved to {new_sl:.5f}')
+
+  if updated:
+    msg = f'🛡️ BREAK-EVEN LOCKED FOR TRADE #{t_id}\n'
+    msg += '───────────────────────────\n'
+    msg += f'📌 Symbol    : {symbol} [{direction}]\n'
+    msg += f'📍 Entry     : ${entry:.5f}\n'
+    msg += f'🛡️ New SL    : ${new_sl:.5f} (Break-Even Locked)\n'
+    msg += f'📈 Peak PnL  : +{profit_pct:.2f}%\n'
+    msg += '───────────────────────────'
+
+    send_ntfy_notification(
+        title=f'🛡️ Break-Even Locked: {symbol}',
+        message_body=msg,
+        tags=['shield', 'lock'],
+        topic=EVENT_ALERT_TOPIC,
+    )
+
+  return new_sl
 
 
 # =========================================================
@@ -322,6 +395,14 @@ def process_active_trades():
     status = 'ACTIVE'
     gross_pnl = 0.0
 
+    trade_dict = {
+        'id': t_id,
+        'symbol': symbol,
+        'direction': direction,
+        'entry_price': entry_p,
+        'sl_price': sl_p,
+    }
+
     for idx, row in df.iterrows():
       c_time_ms = row['time']
       c_open, c_high, c_low, c_close = (
@@ -331,6 +412,10 @@ def process_active_trades():
           row['close'],
       )
       time_elapsed_seconds = (c_time_ms - start_ms) / 1000.0
+
+      # 🛡️ Dynamic Break-Even Check (Candle High for LONG, Candle Low for SHORT)
+      check_p = c_high if direction == 'LONG' else c_low
+      sl_p = check_trailing_and_breakeven(trade_dict, check_p)
 
       if direction == 'LONG':
         if c_close >= c_open:
