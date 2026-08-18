@@ -41,61 +41,119 @@ def get_db_connection():
 
 # =========================================================
 # 📊 BINANCE API HELPERS
-# =========================================================
+# =================================import pandas as pd
+import requests
+
+
 def fetch_binance_klines(symbol, interval="1m", limit=300, start_time=None):
+  """Fetches kline/candlestick data from Binance.
+
+  Uses User-Agent headers and automatic Spot API fallback for GitHub Hosted
+  Runners / Cloud IPs.
+  """
   symbol = symbol.replace("/", "").upper()
   if not symbol.endswith("USDT"):
     symbol += "USDT"
 
-  url = "https://fapi.binance.com/fapi/v1/klines"
+  # 1. Custom User-Agent to prevent Python-requests blocking
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+      )
+  }
+
   params = {"symbol": symbol, "interval": interval, "limit": limit}
+
+  # 2. Safe timestamp parsing
   if start_time:
-    params["startTime"] = int(start_time)
+    try:
+      params["startTime"] = int(float(start_time))
+    except Exception as e:
+      print(f"⚠️ Timestamp conversion error for {symbol}: {e}")
 
-  try:
-    res = requests.get(url, params=params, timeout=8)
-    data = res.json()
-    if not isinstance(data, list):
-      return None
+  # 3. Endpoints list: Futures primary, Spot fallback (GitHub runners often get 403 on Futures)
+  endpoints = [
+      "https://fapi.binance.com/fapi/v1/klines",  # Futures API
+      "https://api.binance.com/api/v3/klines",  # Spot API (Fallback)
+  ]
 
-    df = pd.DataFrame(
-        data,
-        columns=[
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_volume",
-            "trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore",
-        ],
-    )
-    cols = ["open", "high", "low", "close", "volume"]
-    df[cols] = df[cols].astype(float)
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    return df
-  except Exception as e:
-    print(f"⚠️ Binance Kline Error for {symbol}: {e}")
-    return None
+  for url in endpoints:
+    try:
+      res = requests.get(url, params=params, headers=headers, timeout=10)
+
+      if res.status_code == 200:
+        data = res.json()
+
+        # Ensure valid list data is received
+        if isinstance(data, list) and len(data) > 0:
+          df = pd.DataFrame(
+              data,
+              columns=[
+                  "open_time",
+                  "open",
+                  "high",
+                  "low",
+                  "close",
+                  "volume",
+                  "close_time",
+                  "quote_volume",
+                  "trades",
+                  "taker_buy_base",
+                  "taker_buy_quote",
+                  "ignore",
+              ],
+          )
+
+          cols = ["open", "high", "low", "close", "volume"]
+          df[cols] = df[cols].astype(float)
+          df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+          return df
+
+      print(
+          f"⚠️ Binance API HTTP {res.status_code} on endpoint: {url}. Trying"
+          " fallback..."
+      )
+
+    except Exception as e:
+      print(f"⚠️ Exception fetching klines for {symbol} on {url}: {e}")
+
+  print(f"❌ Failed to download candles for {symbol} from all Binance endpoints.")
+  return None
 
 
 def fetch_live_price(symbol):
+  """Fetches current market price with headers and fallback support."""
   symbol = symbol.replace("/", "").upper()
   if not symbol.endswith("USDT"):
     symbol += "USDT"
 
-  url = "https://fapi.binance.com/fapi/v1/ticker/price"
-  try:
-    res = requests.get(url, params={"symbol": symbol}, timeout=5)
-    data = res.json()
-    return float(data.get("price", 0.0))
-  except Exception:
-    return 0.0
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+      )
+  }
+
+  endpoints = [
+      "https://fapi.binance.com/fapi/v1/ticker/price",  # Futures
+      "https://api.binance.com/api/v3/ticker/price",  # Spot
+  ]
+
+  for url in endpoints:
+    try:
+      res = requests.get(
+          url, params={"symbol": symbol}, headers=headers, timeout=5
+      )
+      if res.status_code == 200:
+        data = res.json()
+        return float(data.get("price", 0.0))
+    except Exception:
+      continue
+
+  print(f"❌ Could not fetch live price for {symbol}")
+  return 0.0
+
 
 
 # =========================================================
