@@ -40,18 +40,22 @@ def get_db_connection():
 # =========================================================
 # 📊 BINANCE API HELPERS
 # =========================================================
-def fetch_binance_klines(symbol, interval="1m", limit=300, start_time=None):
-  symbol = symbol.replace("/", "").upper()
-  if not symbol.endswith("USDT"):
-    symbol += "USDT"
+def fetch_binance_klines(
+    symbol, interval='1m', limit=1000, start_time=None, end_time=None
+):
+  symbol = symbol.replace('/', '').upper()
+  if not symbol.endswith('USDT'):
+    symbol += 'USDT'
 
-  url = "https://fapi.binance.com/fapi/v1/klines"
-  params = {"symbol": symbol, "interval": interval, "limit": limit}
+  url = 'https://fapi.binance.com/fapi/v1/klines'
+  params = {'symbol': symbol, 'interval': interval, 'limit': limit}
   if start_time:
-    params["startTime"] = int(start_time)
+    params['startTime'] = int(start_time)
+  if end_time:
+    params['endTime'] = int(end_time)
 
   try:
-    res = requests.get(url, params=params, timeout=8)
+    res = requests.get(url, params=params, timeout=10)
     data = res.json()
     if not isinstance(data, list):
       return None
@@ -59,27 +63,28 @@ def fetch_binance_klines(symbol, interval="1m", limit=300, start_time=None):
     df = pd.DataFrame(
         data,
         columns=[
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_volume",
-            "trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore",
+            'open_time',
+            'open',
+            'high',
+            'low',
+            'close',
+            'volume',
+            'close_time',
+            'quote_volume',
+            'trades',
+            'taker_buy_base',
+            'taker_buy_quote',
+            'ignore',
         ],
     )
-    cols = ["open", "high", "low", "close", "volume"]
+    cols = ['open', 'high', 'low', 'close', 'volume']
     df[cols] = df[cols].astype(float)
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
     return df
   except Exception as e:
-    print(f"⚠️ Binance Kline Error for {symbol}: {e}")
+    print(f'⚠️ Binance Kline Error for {symbol}: {e}')
     return None
+
 
 
 def fetch_live_price(symbol):
@@ -397,62 +402,100 @@ def tab_portfolio():
     return jsonify({"error": "Internal Error", "details": str(e)}), 500
 
 
-@app.route("/active")
+@app.route('/active')
 def tab_active_trades():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return 'Database Connection Failed.', 500
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
-  trades = cursor.fetchall() or []
-  conn.close()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC"
+    )
+    trades = cursor.fetchall() or []
+    conn.close()
 
-  parsed_trades = []
-  for t in trades:
-    live_p = fetch_live_price(t["symbol"])
-    entry = float(t["entry_price"])
-    sl = float(t["sl_price"])
-    tp1 = float(t["tp1_price"])
-    margin = float(t["margin_frozen"])
-    pos_val = float(t["pos_value"])
+    parsed_trades = []
+    total_floating_pnl = 0.0
+    total_margin_used = 0.0
+    long_count = 0
+    short_count = 0
 
-    direction = str(t["direction"]).upper()
-    if direction in ["LONG", "BUY"]:
-      pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
-      if live_p >= entry and tp1 > entry:
-        tp_progress = min(100, max(0, ((live_p - entry) / (tp1 - entry)) * 100))
-        sl_progress = 0
-      elif live_p < entry and entry > sl:
-        sl_progress = min(100, max(0, ((entry - live_p) / (entry - sl)) * 100))
-        tp_progress = 0
+    for t in trades:
+      live_p = fetch_live_price(t.get('symbol', 'BTCUSDT'))
+      entry = float(t.get('entry_price') or 0.0)
+      sl = float(t.get('sl_price') or 0.0)
+      tp1 = float(t.get('tp1_price') or 0.0)
+      margin = float(t.get('margin_frozen') or 0.0)
+      pos_val = float(t.get('pos_value') or 0.0)
+
+      total_margin_used += margin
+      direction = str(t.get('direction', 'LONG')).upper()
+
+      if direction in ['LONG', 'BUY']:
+        long_count += 1
+        pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0.0
+        if live_p >= entry and tp1 > entry:
+          tp_progress = min(
+              100, max(0, ((live_p - entry) / (tp1 - entry)) * 100)
+          )
+          sl_progress = 0
+        elif live_p < entry and entry > sl:
+          sl_progress = min(
+              100, max(0, ((entry - live_p) / (entry - sl)) * 100)
+          )
+          tp_progress = 0
+        else:
+          tp_progress = sl_progress = 0
       else:
-        tp_progress = sl_progress = 0
-    else:
-      pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
-      if live_p <= entry and entry > tp1:
-        tp_progress = min(100, max(0, ((entry - live_p) / (entry - tp1)) * 100))
-        sl_progress = 0
-      elif live_p > entry and sl > entry:
-        sl_progress = min(100, max(0, ((live_p - entry) / (sl - entry)) * 100))
-        tp_progress = 0
-      else:
-        tp_progress = sl_progress = 0
+        short_count += 1
+        pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0.0
+        if live_p <= entry and entry > tp1:
+          tp_progress = min(
+              100, max(0, ((entry - live_p) / (entry - tp1)) * 100)
+          )
+          sl_progress = 0
+        elif live_p > entry and sl > entry:
+          sl_progress = min(
+              100, max(0, ((live_p - entry) / (sl - entry)) * 100)
+          )
+          tp_progress = 0
+        else:
+          tp_progress = sl_progress = 0
 
-    pnl_pct = (pnl_usdt / margin) * 100 if margin > 0 else 0.0
+      pnl_pct = (pnl_usdt / margin * 100) if margin > 0 else 0.0
+      total_floating_pnl += pnl_usdt
 
-    parsed_trades.append({
-        "info": t,
-        "live_price": live_p,
-        "pnl_usdt": round(pnl_usdt, 2),
-        "pnl_pct": round(pnl_pct, 2),
-        "tp_progress": round(tp_progress, 1),
-        "sl_progress": round(sl_progress, 1),
-    })
+      parsed_trades.append({
+          'info': t,
+          'live_price': round(live_p, 5),
+          'pnl_usdt': round(pnl_usdt, 2),
+          'pnl_pct': round(pnl_pct, 2),
+          'tp_progress': round(tp_progress, 1),
+          'sl_progress': round(sl_progress, 1),
+      })
 
-  return render_template("active_trades.html", trades=parsed_trades)
+    summary = {
+        'total_active': len(parsed_trades),
+        'total_floating_pnl': round(total_floating_pnl, 2),
+        'total_margin_used': round(total_margin_used, 2),
+        'long_count': long_count,
+        'short_count': short_count,
+    }
+
+    return render_template(
+        'active_trades.html', trades=parsed_trades, summary=summary
+    )
+
+  except Exception as e:
+    import traceback
+
+    traceback.print_exc()
+    return jsonify({'error': 'Internal Error', 'details': str(e)}), 500
 
 
+#+_+_+_+$+(())())())()
 @app.route("/closed")
 def tab_closed_trades():
   conn = get_db_connection()
@@ -477,34 +520,74 @@ def tab_closed_trades():
   return render_template("closed_trades.html", trades=parsed_trades)
 
 
-@app.route("/sl-analysis")
+import time
+from datetime import datetime, timezone
+
+
+@app.route('/sl-analysis')
 def tab_sl_analysis():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return 'Database Connection Failed.', 500
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute(
-      "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id DESC"
-  )
-  sl_trades = cursor.fetchall() or []
-  conn.close()
-
-  analyzed_list = []
-  for t in sl_trades:
-    entry_time = t["timestamp"]
-    if isinstance(entry_time, str):
-      entry_time = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
-
-    start_ms = entry_time.replace(tzinfo=timezone.utc).timestamp() * 1000
-    df = fetch_binance_klines(
-        t["symbol"], interval="1m", limit=500, start_time=start_ms
+    cursor = conn.cursor(dictionary=True)
+    # SL trades aur overall losing trades filter karna
+    cursor.execute(
+        "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id"
+        ' DESC'
     )
-    analysis = analyze_sl_trade(t, df)
+    sl_trades = cursor.fetchall() or []
+    conn.close()
 
-    analyzed_list.append({"trade": t, "analysis": analysis})
+    analyzed_list = []
+    current_time_ms = int(time.time() * 1000)
 
-  return render_template("sl_analysis.html", trades=analyzed_list)
+    for t in sl_trades:
+      entry_time = t.get('timestamp')
+
+      # Datetime string parsing fix
+      if isinstance(entry_time, str):
+        try:
+          entry_time = datetime.strptime(entry_time, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+          entry_time = datetime.now()
+
+      if isinstance(entry_time, datetime):
+        # Timezone conversion for Unix epoch ms
+        if entry_time.tzinfo is None:
+          start_ms = int(entry_time.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        else:
+          start_ms = int(entry_time.timestamp() * 1000)
+      else:
+        start_ms = current_time_ms - (3600 * 1000)  # Fallback to 1 hour back
+
+      # Trade entry se lekar current execution context tak 1-minute candles download karna
+      df = fetch_binance_klines(
+          symbol=t['symbol'],
+          interval='1m',
+          limit=1000,  # Up to 1000 1-minute candles (approx 16.6 hours)
+          start_time=start_ms,
+          end_time=current_time_ms,
+      )
+
+      # Diagnostic post-mortem pass
+      analysis = analyze_sl_trade(t, df)
+
+      analyzed_list.append({
+          'trade': t,
+          'analysis': analysis,
+          'candles_audited': len(df) if df is not None else 0,
+      })
+
+    return render_template('sl_analysis.html', trades=analyzed_list)
+
+  except Exception as e:
+    import traceback
+
+    traceback.print_exc()
+    return jsonify({'error': 'Analysis Engine Error', 'details': str(e)}), 500
+
 
 
 @app.route("/api/kline")
