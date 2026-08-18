@@ -105,9 +105,11 @@ def update_sl_in_db(trade_id, new_sl):
 # 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
 # =========================================================
 def check_trailing_and_breakeven(trade, current_price):
-  """USDT-Based Lock:
+  """Multi-Level USDT Lock Logic:
 
-  If trade hits +0.30 USDT gross profit, SL is locked at +0.15 USDT profit level.
+  1. Profit >= +0.15 USDT -> SL locked at +0.05 USDT
+  2. Profit >= +0.30 USDT -> SL locked at +0.15 USDT
+  3. Profit >= +1.00 USDT -> SL locked at +0.50 USDT
   """
   entry = trade['entry_price']
   sl = trade['sl_price']
@@ -121,49 +123,64 @@ def check_trailing_and_breakeven(trade, current_price):
 
   updated = False
   new_sl = sl
+  locked_profit = 0.0
 
   if direction in ['LONG', 'BUY']:
-    # Current floating profit in USDT
     current_pnl_usdt = pos_val * ((current_price - entry) / entry)
 
-    # Check if profit reaches +0.30 USDT
-    if current_pnl_usdt >= 0.30:
-      # Target SL price that locks +0.15 USDT profit
+    # Multi-level targets check (Highest level first)
+    if current_pnl_usdt >= 1.00:
+      target_sl = entry * (1 + (0.50 / pos_val))
+      locked_profit = 0.50
+    elif current_pnl_usdt >= 0.30:
       target_sl = entry * (1 + (0.15 / pos_val))
+      locked_profit = 0.15
+    elif current_pnl_usdt >= 0.15:
+      target_sl = entry * (1 + (0.05 / pos_val))
+      locked_profit = 0.05
+    else:
+      target_sl = sl
 
-      # Only move SL up, never down
-      if sl < target_sl:
-        new_sl = target_sl
-        update_sl_in_db(t_id, new_sl)
-        trade['sl_price'] = new_sl
-        updated = True
-        print(
-            f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-            f' ${new_sl:.5f} (Locked +$0.15 USDT)'
-        )
+    # SL move strictly upwards
+    if target_sl > sl:
+      new_sl = target_sl
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(
+          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+      )
 
   elif direction in ['SHORT', 'SELL']:
-    # Current floating profit in USDT for SHORT
     current_pnl_usdt = pos_val * ((entry - current_price) / entry)
 
-    # Check if profit reaches +0.30 USDT
-    if current_pnl_usdt >= 0.30:
-      # Target SL price that locks +0.15 USDT profit for SHORT
+    # Multi-level targets check for SHORT
+    if current_pnl_usdt >= 1.00:
+      target_sl = entry * (1 - (0.50 / pos_val))
+      locked_profit = 0.50
+    elif current_pnl_usdt >= 0.30:
       target_sl = entry * (1 - (0.15 / pos_val))
+      locked_profit = 0.15
+    elif current_pnl_usdt >= 0.15:
+      target_sl = entry * (1 - (0.05 / pos_val))
+      locked_profit = 0.05
+    else:
+      target_sl = sl
 
-      # Only move SL down, never up
-      if sl > target_sl:
-        new_sl = target_sl
-        update_sl_in_db(t_id, new_sl)
-        trade['sl_price'] = new_sl
-        updated = True
-        print(
-            f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-            f' ${new_sl:.5f} (Locked +$0.15 USDT)'
-        )
+    # SL move strictly downwards for SHORT
+    if sl == 0 or target_sl < sl:
+      new_sl = target_sl
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(
+          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+      )
 
   if updated:
-    msg = f'🛡️ PROFIT LOCKED (+0.15 USDT) FOR TRADE #{t_id}\n'
+    msg = f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} USDT) FOR TRADE #{t_id}\n'
     msg += '───────────────────────────\n'
     msg += f'📌 Symbol    : {symbol} [{direction}]\n'
     msg += f'📍 Entry     : ${entry:.5f}\n'
@@ -172,13 +189,14 @@ def check_trailing_and_breakeven(trade, current_price):
     msg += '───────────────────────────'
 
     send_ntfy_notification(
-        title=f'🛡️ Profit Locked (+0.15 USDT): {symbol}',
+        title=f'🛡️ Profit Locked (+${locked_profit:.2f} USDT): {symbol}',
         message_body=msg,
         tags=['shield', 'moneybag'],
         topic=EVENT_ALERT_TOPIC,
     )
 
   return new_sl
+
 
 
 
