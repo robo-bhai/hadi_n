@@ -98,57 +98,88 @@ def update_sl_in_db(trade_id, new_sl):
 # =========================================================
 # 🛡️ TRAILING & BREAK-EVEN MONITORING ENGINE
 # =========================================================
+# =========================================================
+# 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
+# =========================================================
+# =========================================================
+# 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
+# =========================================================
 def check_trailing_and_breakeven(trade, current_price):
-  """
-  Real-time monitoring for active trades.
-  If profit hits +0.35% or higher, moves SL to Break-Even (Entry + 0.05% fee buffer)
-  and triggers a notification on EVENT_ALERT_TOPIC.
+  """USDT-Based Lock:
+
+  If trade hits +0.30 USDT gross profit, SL is locked at +0.15 USDT profit level.
   """
   entry = trade['entry_price']
   sl = trade['sl_price']
   direction = trade['direction'].upper()
   t_id = trade['id']
   symbol = trade.get('symbol', '')
+  pos_val = trade.get('pos_value', 0.0)
+
+  if pos_val <= 0 or entry <= 0:
+    return sl
 
   updated = False
   new_sl = sl
 
   if direction in ['LONG', 'BUY']:
-    profit_pct = ((current_price - entry) / entry) * 100
-    # If profit hits +0.35% or higher, move SL to Break-Even (Entry + 0.05% Exchange fee)
-    if profit_pct >= 0.35 and sl < entry:
-      new_sl = entry * 1.0005
-      update_sl_in_db(t_id, new_sl)
-      trade['sl_price'] = new_sl
-      updated = True
-      print(f'🛡️ [BREAK-EVEN LOCKED] Trade #{t_id} SL moved to {new_sl:.5f}')
+    # Current floating profit in USDT
+    current_pnl_usdt = pos_val * ((current_price - entry) / entry)
+
+    # Check if profit reaches +0.30 USDT
+    if current_pnl_usdt >= 0.30:
+      # Target SL price that locks +0.15 USDT profit
+      target_sl = entry * (1 + (0.15 / pos_val))
+
+      # Only move SL up, never down
+      if sl < target_sl:
+        new_sl = target_sl
+        update_sl_in_db(t_id, new_sl)
+        trade['sl_price'] = new_sl
+        updated = True
+        print(
+            f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+            f' ${new_sl:.5f} (Locked +$0.15 USDT)'
+        )
 
   elif direction in ['SHORT', 'SELL']:
-    profit_pct = ((entry - current_price) / entry) * 100
-    if profit_pct >= 0.35 and sl > entry:
-      new_sl = entry * 0.9995
-      update_sl_in_db(t_id, new_sl)
-      trade['sl_price'] = new_sl
-      updated = True
-      print(f'🛡️ [BREAK-EVEN LOCKED] Trade #{t_id} SL moved to {new_sl:.5f}')
+    # Current floating profit in USDT for SHORT
+    current_pnl_usdt = pos_val * ((entry - current_price) / entry)
+
+    # Check if profit reaches +0.30 USDT
+    if current_pnl_usdt >= 0.30:
+      # Target SL price that locks +0.15 USDT profit for SHORT
+      target_sl = entry * (1 - (0.15 / pos_val))
+
+      # Only move SL down, never up
+      if sl > target_sl:
+        new_sl = target_sl
+        update_sl_in_db(t_id, new_sl)
+        trade['sl_price'] = new_sl
+        updated = True
+        print(
+            f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+            f' ${new_sl:.5f} (Locked +$0.15 USDT)'
+        )
 
   if updated:
-    msg = f'🛡️ BREAK-EVEN LOCKED FOR TRADE #{t_id}\n'
+    msg = f'🛡️ PROFIT LOCKED (+0.15 USDT) FOR TRADE #{t_id}\n'
     msg += '───────────────────────────\n'
     msg += f'📌 Symbol    : {symbol} [{direction}]\n'
     msg += f'📍 Entry     : ${entry:.5f}\n'
-    msg += f'🛡️ New SL    : ${new_sl:.5f} (Break-Even Locked)\n'
-    msg += f'📈 Peak PnL  : +{profit_pct:.2f}%\n'
+    msg += f'🛡️ Locked SL : ${new_sl:.5f}\n'
+    msg += f'💵 Peak PnL  : +${current_pnl_usdt:.2f} USDT\n'
     msg += '───────────────────────────'
 
     send_ntfy_notification(
-        title=f'🛡️ Break-Even Locked: {symbol}',
+        title=f'🛡️ Profit Locked (+0.15 USDT): {symbol}',
         message_body=msg,
-        tags=['shield', 'lock'],
+        tags=['shield', 'moneybag'],
         topic=EVENT_ALERT_TOPIC,
     )
 
   return new_sl
+
 
 
 # =========================================================
@@ -475,6 +506,7 @@ def process_active_trades():
         'direction': direction,
         'entry_price': entry_p,
         'sl_price': sl_p,
+        'pos_value': pos_val,
     }
 
     for idx, row in df.iterrows():
@@ -616,6 +648,7 @@ def process_active_trades():
       )
 
   conn.close()
+
 
 
 
