@@ -113,15 +113,22 @@ def update_sl_in_db(trade_id, new_sl):
   conn.close()
 
 
+from email.header import Header
+
+
 def send_ntfy_notification(
     title, message_body, tags=None, topic=EVENT_ALERT_TOPIC
 ):
-  """Sends push notification via NTFY."""
+  """Sends push notification via NTFY with RFC 2047 encoded Title."""
   if not topic:
     return
 
   url = f'https://ntfy.sh/{topic}'
-  headers = {'Title': title}
+
+  # Encode Title to RFC 2047 format for Unicode header support
+  encoded_title = Header(title, 'utf-8').encode()
+
+  headers = {'Title': encoded_title}
   if tags:
     headers['Tags'] = ','.join(tags)
 
