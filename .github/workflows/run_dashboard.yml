@@ -24,13 +24,13 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flask mysql-connector-python pandas requests matplotlib
+          pip install flask mysql-connector-python pandas requests gunicorn
           
           # Install Cloudflared CLI
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
-      - name: Launch Flask Server in Background
+      - name: Launch Production Server via Gunicorn (Background)
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -38,17 +38,19 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: |
-          python server.py &
-          echo "Waiting 5 seconds for Flask server to boot up..."
+          echo "Starting Gunicorn WSGI Server in background..."
+          nohup gunicorn -w 2 -b 0.0.0.0:5000 server:app > flask.log 2>&1 &
+          echo "Waiting 5 seconds for server boot..."
           sleep 5
+          cat flask.log
 
       - name: Create Cloudflare Tunnel & Send Link to ntfy
         run: |
           echo "Generating Public URL via Cloudflare Tunnel..."
           
-          # Start Quick Cloudflare Tunnel in background and capture logs
-          cloudflared tunnel --url http://localhost:5000 > cloudflare.log 2>&1 &
-          sleep 8
+          # Start Cloudflare Tunnel detaching process
+          nohup cloudflared tunnel --url http://localhost:5000 > cloudflare.log 2>&1 &
+          sleep 10
 
           # Extract trycloudflare.com URL from log file
           TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflare.log | head -n 1)
@@ -60,7 +62,7 @@ jobs:
             exit 1
           fi
 
-          # Send Dashboard Link via ntfy.sh (Clean One-line Data Format)
+          # Send Dashboard Link via ntfy.sh
           curl -s -X POST https://ntfy.sh/lev_nasiiar_link_988 \
             -H "Title: 🚀 Live Crypto Dashboard Link (Cloudflare)" \
             -H "Click: $TUNNEL_URL" \

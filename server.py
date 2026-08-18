@@ -1,15 +1,80 @@
-import base64
 from datetime import datetime
-import io
+import json
 import os
-import ssl
-from zoneinfo import ZoneInfo  # Built-in in Python 3.9+
+import sys
+import traceback
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, render_template, request
 import mysql.connector
 import pandas as pd
 import requests
 
 app = Flask(__name__)
+
+LOG_FILE = "log_data.json"
+NTFY_TOPIC = "lev_nasiiar_link_988"
+NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
+
+# =========================================================
+# 🔔 LOGGING & NTFY ALERT SYSTEM
+# =========================================================
+
+
+def write_local_log(log_entry):
+  """Save traces locally to log_data.json"""
+  try:
+    logs = []
+    if os.path.exists(LOG_FILE):
+      with open(LOG_FILE, "r", encoding="utf-8") as f:
+        try:
+          logs = json.load(f)
+        except json.JSONDecodeError:
+          logs = []
+
+    logs.append(log_entry)
+
+    # Keep last 1000 logs to prevent heavy file size
+    if len(logs) > 1000:
+      logs = logs[-1000:]
+
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+      json.dump(logs, f, indent=4, default=str)
+  except Exception as e:
+    print(f"Failed writing local log file: {e}")
+
+
+def send_ntfy_alert(title, message, error_details=None, level="error"):
+  """Sends structured error reports to ntfy topic and appends to local log_data.json."""
+  timestamp = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+  log_payload = {
+      "timestamp": timestamp,
+      "level": level.upper(),
+      "title": title,
+      "message": message,
+      "error_details": error_details,
+  }
+
+  # 1. Save in log_data.json
+  write_local_log(log_payload)
+
+  # 2. Alert on ntfy channel
+  try:
+    headers = {
+        "Title": title[:100],
+        "Priority": "high" if level == "error" else "default",
+        "Tags": "warning,bug" if level == "error" else "info",
+    }
+    content = f"Time: {timestamp}\nMessage: {message}"
+    if error_details:
+      content += f"\n\nTraceback:\n{str(error_details)[:1000]}"
+
+    requests.post(
+        NTFY_URL, data=content.encode("utf-8"), headers=headers, timeout=5
+    )
+  except Exception as ntfy_err:
+    print(f"⚠️ Failed to send ntfy notification: {ntfy_err}")
+
 
 # =========================================================
 # 🔑 EXACT DB CREDENTIALS & CONNECTION SETTINGS
@@ -36,7 +101,13 @@ def get_db_connection():
     print("✅ Connected Successfully!")
     return conn
   except Exception as err:
-    print(f"❌ MySQL Connection Error: {err}")
+    error_msg = f"MySQL Connection Error: {err}"
+    print(f"❌ {error_msg}")
+    send_ntfy_alert(
+        title="Database Connection Failure",
+        message="Failed to connect to Aiven MySQL Instance.",
+        error_details=traceback.format_exc(),
+    )
     return None
 
 
@@ -48,9 +119,11 @@ def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
   if not symbol.endswith("USDT"):
     symbol += "USDT"
 
+  # Updated Browser User-Agent to bypass Cloudflare on GitHub Runners
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          " (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
       )
   }
   params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -64,6 +137,8 @@ def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
   endpoints = [
       "https://fapi.binance.com/fapi/v1/klines",
       "https://api.binance.com/api/v3/klines",
+      "https://api1.binance.com/api/v3/klines",
+      "https://api3.binance.com/api/v3/klines",
   ]
 
   for url in endpoints:
@@ -96,11 +171,16 @@ def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
     except Exception as e:
       print(f"⚠️ Exception fetching klines for {symbol} on {url}: {e}")
 
-  # FALLBACK: If timestamp filtering yields 0 candles, fetch latest candles
+  # FALLBACK: Retry without startTime filter
   if start_time is not None:
     print(f"🔄 Retrying {symbol} without startTime filter...")
     return fetch_binance_klines(symbol, interval=interval, limit=limit)
 
+  send_ntfy_alert(
+      title="Binance Kline Fetch Error",
+      message=f"Failed to pull candle data for {symbol} across all endpoints.",
+      level="warning",
+  )
   return None
 
 
@@ -117,6 +197,7 @@ def fetch_live_price(symbol):
   endpoints = [
       "https://fapi.binance.com/fapi/v1/ticker/price",
       "https://api.binance.com/api/v3/ticker/price",
+      "https://api1.binance.com/api/v3/ticker/price",
   ]
 
   for url in endpoints:
@@ -130,6 +211,11 @@ def fetch_live_price(symbol):
     except Exception:
       continue
 
+  send_ntfy_alert(
+      title="Live Price Fetch Failed",
+      message=f"Could not retrieve live price for {symbol}",
+      level="warning",
+  )
   return 0.0
 
 
@@ -137,106 +223,121 @@ def fetch_live_price(symbol):
 # 🧠 SL DIAGNOSTIC POST-MORTEM ENGINE
 # =========================================================
 def analyze_sl_trade(trade, df):
-  direction = str(trade.get("direction", "LONG")).upper()
-  entry = float(trade.get("entry_price", 0.0))
-  sl = float(trade.get("sl_price", 0.0))
+  try:
+    direction = str(trade.get("direction", "LONG")).upper()
+    entry = float(trade.get("entry_price", 0.0))
+    sl = float(trade.get("sl_price", 0.0))
 
-  total_candles = len(df) if df is not None else 0
-  if total_candles < 2:
+    total_candles = len(df) if df is not None else 0
+    if total_candles < 2:
+      return {
+          "max_favorable": 0.0,
+          "max_adverse": 0.0,
+          "vol_spike": 1.0,
+          "reasons": ["Insufficient kline data."],
+          "win_solutions": [
+              "Ensure candles exist in Binance API for this duration."
+          ],
+      }
+
+    delta = df["close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    tr = (
+        pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - df["close"].shift()).abs(),
+                (df["low"] - df["close"].shift()).abs(),
+            ],
+            axis=1,
+        )
+        .max(axis=1)
+        .rolling(window=14)
+        .mean()
+    )
+    df["atr"] = tr
+
+    max_high = df["high"].max()
+    min_low = df["low"].min()
+    avg_vol = df["volume"].mean()
+    max_vol = df["volume"].max()
+
+    if direction in ["LONG", "BUY"]:
+      max_favorable = ((max_high - entry) / entry) * 100 if entry > 0 else 0
+      max_adverse = ((entry - min_low) / entry) * 100 if entry > 0 else 0
+    else:
+      max_favorable = ((entry - min_low) / entry) * 100 if entry > 0 else 0
+      max_adverse = ((max_high - entry) / entry) * 100 if entry > 0 else 0
+
+    reasons = []
+    win_solutions = []
+
+    atr_val = df["atr"].dropna().iloc[0] if not df["atr"].dropna().empty else 0
+    sl_dist = abs(entry - sl)
+
+    if atr_val > 0 and sl_dist < (atr_val * 1.2):
+      reasons.append(
+          "⚠️ **Tight SL**: Stop Loss distance was within normal ATR noise"
+          " range."
+      )
+    if max_vol > (avg_vol * 3.5):
+      reasons.append(
+          "⚡ **Liquidity Sweep**: Sudden high volume spike hit SL before"
+          " movement."
+      )
+    if max_favorable >= 0.3:
+      reasons.append(
+          f"🔄 **Reversal / Greed**: Trade was up +{max_favorable:.2f}% before"
+          " reversing to SL."
+      )
+
+    if not reasons:
+      reasons.append(
+          "📊 Higher Timeframe market trend or momentum hit the Stop Loss."
+      )
+
+    if max_favorable >= 0.3:
+      win_tp = entry * (
+          1 + (max_favorable * 0.85 / 100)
+          if direction in ["LONG", "BUY"]
+          else 1 - (max_favorable * 0.85 / 100)
+      )
+      win_solutions.append(
+          f"🎯 Set Micro-TP Target at +{max_favorable*0.8:.2f}% (Price:"
+          f" ${win_tp:.5f})."
+      )
+      win_solutions.append(
+          "🛡️ Enable Auto Break-Even (BE) when trade reaches +0.35% profit."
+      )
+    else:
+      win_solutions.append(
+          "⛔ Filter out using 15m/1h Higher Timeframe EMA Trend Alignment."
+      )
+
+    return {
+        "max_favorable": max_favorable,
+        "max_adverse": max_adverse,
+        "vol_spike": max_vol / avg_vol if avg_vol > 0 else 1.0,
+        "reasons": reasons,
+        "win_solutions": win_solutions,
+    }
+  except Exception as e:
+    send_ntfy_alert(
+        title="SL Trade Diagnostic Crash",
+        message=f"Failed to analyze trade: {trade.get('id', 'N/A')}",
+        error_details=traceback.format_exc(),
+    )
     return {
         "max_favorable": 0.0,
         "max_adverse": 0.0,
         "vol_spike": 1.0,
-        "reasons": ["Insufficient kline data."],
-        "win_solutions": [
-            "Ensure candles exist in Binance API for this duration."
-        ],
+        "reasons": [f"Analysis Exception: {str(e)}"],
+        "win_solutions": [],
     }
-
-  delta = df["close"].diff()
-  gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-  loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-  rs = gain / loss
-  df["rsi"] = 100 - (100 / (1 + rs))
-
-  tr = (
-      pd.concat(
-          [
-              df["high"] - df["low"],
-              (df["high"] - df["close"].shift()).abs(),
-              (df["low"] - df["close"].shift()).abs(),
-          ],
-          axis=1,
-      )
-      .max(axis=1)
-      .rolling(window=14)
-      .mean()
-  )
-  df["atr"] = tr
-
-  max_high = df["high"].max()
-  min_low = df["low"].min()
-  avg_vol = df["volume"].mean()
-  max_vol = df["volume"].max()
-
-  if direction in ["LONG", "BUY"]:
-    max_favorable = ((max_high - entry) / entry) * 100 if entry > 0 else 0
-    max_adverse = ((entry - min_low) / entry) * 100 if entry > 0 else 0
-  else:
-    max_favorable = ((entry - min_low) / entry) * 100 if entry > 0 else 0
-    max_adverse = ((max_high - entry) / entry) * 100 if entry > 0 else 0
-
-  reasons = []
-  win_solutions = []
-
-  atr_val = df["atr"].dropna().iloc[0] if not df["atr"].dropna().empty else 0
-  sl_dist = abs(entry - sl)
-
-  if atr_val > 0 and sl_dist < (atr_val * 1.2):
-    reasons.append(
-        "⚠️ **Tight SL**: Stop Loss distance was within normal ATR noise range."
-    )
-  if max_vol > (avg_vol * 3.5):
-    reasons.append(
-        "⚡ **Liquidity Sweep**: Sudden high volume spike hit SL before"
-        " movement."
-    )
-  if max_favorable >= 0.3:
-    reasons.append(
-        f"🔄 **Reversal / Greed**: Trade was up +{max_favorable:.2f}% before"
-        " reversing to SL."
-    )
-
-  if not reasons:
-    reasons.append(
-        "📊 Higher Timeframe market trend or momentum hit the Stop Loss."
-    )
-
-  if max_favorable >= 0.3:
-    win_tp = entry * (
-        1 + (max_favorable * 0.85 / 100)
-        if direction in ["LONG", "BUY"]
-        else 1 - (max_favorable * 0.85 / 100)
-    )
-    win_solutions.append(
-        f"🎯 Set Micro-TP Target at +{max_favorable*0.8:.2f}% (Price:"
-        f" ${win_tp:.5f})."
-    )
-    win_solutions.append(
-        "🛡️ Enable Auto Break-Even (BE) when trade reaches +0.35% profit."
-    )
-  else:
-    win_solutions.append(
-        "⛔ Filter out using 15m/1h Higher Timeframe EMA Trend Alignment."
-    )
-
-  return {
-      "max_favorable": max_favorable,
-      "max_adverse": max_adverse,
-      "vol_spike": max_vol / avg_vol if avg_vol > 0 else 1.0,
-      "reasons": reasons,
-      "win_solutions": win_solutions,
-  }
 
 
 # =========================================================
@@ -247,196 +348,254 @@ def analyze_sl_trade(trade, df):
 @app.route("/")
 @app.route("/portfolio")
 def tab_portfolio():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return (
+          "Database Connection Failed. Error alert pushed to ntfy.",
+          500,
+      )
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute("SELECT * FROM portfolio WHERE id = 1")
-  port = cursor.fetchone() or {
-      "total_capital": 100.0,
-      "available_capital": 100.0,
-      "frozen_margin": 0.0,
-  }
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM portfolio WHERE id = 1")
+    port = cursor.fetchone() or {
+        "total_capital": 100.0,
+        "available_capital": 100.0,
+        "frozen_margin": 0.0,
+    }
 
-  cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
-  active_trades = cursor.fetchall()
+    cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
+    active_trades = cursor.fetchall()
 
-  cursor.execute("SELECT * FROM trades WHERE status != 'ACTIVE'")
-  closed_trades = cursor.fetchall()
+    cursor.execute("SELECT * FROM trades WHERE status != 'ACTIVE'")
+    closed_trades = cursor.fetchall()
 
-  total_floating_pnl = 0.0
-  active_margin = 0.0
+    total_floating_pnl = 0.0
+    active_margin = 0.0
 
-  for t in active_trades:
-    live_p = fetch_live_price(t["symbol"])
-    entry = float(t["entry_price"])
-    pos_val = float(t["pos_value"])
-    margin = float(t["margin_frozen"])
-    active_margin += margin
+    for t in active_trades:
+      live_p = fetch_live_price(t["symbol"])
+      entry = float(t["entry_price"])
+      pos_val = float(t["pos_value"])
+      margin = float(t["margin_frozen"])
+      active_margin += margin
 
-    if str(t["direction"]).upper() in ["LONG", "BUY"]:
-      float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
-    else:
-      float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+      if str(t["direction"]).upper() in ["LONG", "BUY"]:
+        float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
+      else:
+        float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
 
-    total_floating_pnl += float_pnl
+      total_floating_pnl += float_pnl
 
-  closed_realized_pnl = sum(float(t["pnl"] or 0.0) for t in closed_trades)
-  loss_trades_capital = sum(
-      abs(float(t["pnl"])) for t in closed_trades if float(t["pnl"] or 0.0) < 0
-  )
+    closed_realized_pnl = sum(float(t["pnl"] or 0.0) for t in closed_trades)
+    loss_trades_capital = sum(
+        abs(float(t["pnl"]))
+        for t in closed_trades
+        if float(t["pnl"] or 0.0) < 0
+    )
 
-  avail_cap = float(port["available_capital"])
-  freezed_bal = float(port["frozen_margin"])
+    avail_cap = float(port["available_capital"])
+    freezed_bal = float(port["frozen_margin"])
 
-  stated_capital = avail_cap + active_margin + loss_trades_capital
-  total_overall_balance = float(port["total_capital"]) + total_floating_pnl
-  live_roi = (
-      ((total_overall_balance - stated_capital) / stated_capital) * 100
-      if stated_capital > 0
-      else 0.0
-  )
+    stated_capital = avail_cap + active_margin + loss_trades_capital
+    total_overall_balance = float(port["total_capital"]) + total_floating_pnl
+    live_roi = (
+        ((total_overall_balance - stated_capital) / stated_capital) * 100
+        if stated_capital > 0
+        else 0.0
+    )
 
-  conn.close()
+    conn.close()
 
-  data = {
-      "stated_capital": round(stated_capital, 2),
-      "available_capital": round(avail_cap, 2),
-      "freezed_balance": round(freezed_bal, 2),
-      "active_margin": round(active_margin, 2),
-      "total_active": len(active_trades),
-      "total_closed": len(closed_trades),
-      "floating_pnl": round(total_floating_pnl, 2),
-      "realized_pnl": round(closed_realized_pnl, 2),
-      "live_roi": round(live_roi, 2),
-      "total_overall_balance": round(total_overall_balance, 2),
-  }
-  return render_template("portfolio.html", p=data)
+    data = {
+        "stated_capital": round(stated_capital, 2),
+        "available_capital": round(avail_cap, 2),
+        "freezed_balance": round(freezed_bal, 2),
+        "active_margin": round(active_margin, 2),
+        "total_active": len(active_trades),
+        "total_closed": len(closed_trades),
+        "floating_pnl": round(total_floating_pnl, 2),
+        "realized_pnl": round(closed_realized_pnl, 2),
+        "live_roi": round(live_roi, 2),
+        "total_overall_balance": round(total_overall_balance, 2),
+    }
+    return render_template("portfolio.html", p=data)
+  except Exception as e:
+    send_ntfy_alert(
+        title="Route Exception: /portfolio",
+        message=str(e),
+        error_details=traceback.format_exc(),
+    )
+    return jsonify({"error": "Internal Error", "details": str(e)}), 500
 
 
 @app.route("/active")
 def tab_active_trades():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return "Database Connection Failed.", 500
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
-  trades = cursor.fetchall()
-  conn.close()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC"
+    )
+    trades = cursor.fetchall()
+    conn.close()
 
-  parsed_trades = []
-  for t in trades:
-    live_p = fetch_live_price(t["symbol"])
-    entry = float(t["entry_price"])
-    sl = float(t["sl_price"])
-    tp1 = float(t["tp1_price"])
-    margin = float(t["margin_frozen"])
-    pos_val = float(t["pos_value"])
+    parsed_trades = []
+    for t in trades:
+      live_p = fetch_live_price(t["symbol"])
+      entry = float(t["entry_price"])
+      sl = float(t["sl_price"])
+      tp1 = float(t["tp1_price"])
+      margin = float(t["margin_frozen"])
+      pos_val = float(t["pos_value"])
 
-    direction = str(t["direction"]).upper()
-    if direction in ["LONG", "BUY"]:
-      pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
-      if live_p >= entry and tp1 > entry:
-        tp_progress = min(100, max(0, ((live_p - entry) / (tp1 - entry)) * 100))
-        sl_progress = 0
-      elif live_p < entry and entry > sl:
-        sl_progress = min(100, max(0, ((entry - live_p) / (entry - sl)) * 100))
-        tp_progress = 0
+      direction = str(t["direction"]).upper()
+      if direction in ["LONG", "BUY"]:
+        pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
+        if live_p >= entry and tp1 > entry:
+          tp_progress = min(
+              100, max(0, ((live_p - entry) / (tp1 - entry)) * 100)
+          )
+          sl_progress = 0
+        elif live_p < entry and entry > sl:
+          sl_progress = min(
+              100, max(0, ((entry - live_p) / (entry - sl)) * 100)
+          )
+          tp_progress = 0
+        else:
+          tp_progress = sl_progress = 0
       else:
-        tp_progress = sl_progress = 0
-    else:
-      pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
-      if live_p <= entry and entry > tp1:
-        tp_progress = min(100, max(0, ((entry - live_p) / (entry - tp1)) * 100))
-        sl_progress = 0
-      elif live_p > entry and sl > entry:
-        sl_progress = min(100, max(0, ((live_p - entry) / (sl - entry)) * 100))
-        tp_progress = 0
-      else:
-        tp_progress = sl_progress = 0
+        pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+        if live_p <= entry and entry > tp1:
+          tp_progress = min(
+              100, max(0, ((entry - live_p) / (entry - tp1)) * 100)
+          )
+          sl_progress = 0
+        elif live_p > entry and sl > entry:
+          sl_progress = min(
+              100, max(0, ((live_p - entry) / (sl - entry)) * 100)
+          )
+          tp_progress = 0
+        else:
+          tp_progress = sl_progress = 0
 
-    pnl_pct = (pnl_usdt / margin) * 100 if margin > 0 else 0.0
+      pnl_pct = (pnl_usdt / margin) * 100 if margin > 0 else 0.0
 
-    parsed_trades.append({
-        "info": t,
-        "live_price": live_p,
-        "pnl_usdt": round(pnl_usdt, 2),
-        "pnl_pct": round(pnl_pct, 2),
-        "tp_progress": round(tp_progress, 1),
-        "sl_progress": round(sl_progress, 1),
-    })
+      parsed_trades.append({
+          "info": t,
+          "live_price": live_p,
+          "pnl_usdt": round(pnl_usdt, 2),
+          "pnl_pct": round(pnl_pct, 2),
+          "tp_progress": round(tp_progress, 1),
+          "sl_progress": round(sl_progress, 1),
+      })
 
-  return render_template("active_trades.html", trades=parsed_trades)
+    return render_template("active_trades.html", trades=parsed_trades)
+  except Exception as e:
+    send_ntfy_alert(
+        title="Route Exception: /active",
+        message=str(e),
+        error_details=traceback.format_exc(),
+    )
+    return jsonify({"error": str(e)}), 500
 
 
 @app.route("/closed")
 def tab_closed_trades():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return "Database Connection Failed.", 500
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute(
-      "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id DESC"
-  )
-  trades = cursor.fetchall()
-  conn.close()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id DESC"
+    )
+    trades = cursor.fetchall()
+    conn.close()
 
-  parsed_trades = []
-  for t in trades:
-    parsed_trades.append({
-        "info": t,
-        "pnl": round(float(t["pnl"] or 0.0), 2),
-        "status": t["status"],
-    })
+    parsed_trades = []
+    for t in trades:
+      parsed_trades.append({
+          "info": t,
+          "pnl": round(float(t["pnl"] or 0.0), 2),
+          "status": t["status"],
+      })
 
-  return render_template("closed_trades.html", trades=parsed_trades)
+    return render_template("closed_trades.html", trades=parsed_trades)
+  except Exception as e:
+    send_ntfy_alert(
+        title="Route Exception: /closed",
+        message=str(e),
+        error_details=traceback.format_exc(),
+    )
+    return jsonify({"error": str(e)}), 500
 
 
 @app.route("/sl-analysis")
 def tab_sl_analysis():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return "Database Connection Failed.", 500
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute(
-      "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id DESC"
-  )
-  sl_trades = cursor.fetchall()
-  conn.close()
-
-  analyzed_list = []
-  # Define Local Timezone dynamically
-  local_tz = ZoneInfo("Asia/Karachi")
-
-  for t in sl_trades:
-    entry_time = t["timestamp"]
-
-    if isinstance(entry_time, str):
-      try:
-        entry_time = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
-      except ValueError:
-        entry_time = None
-
-    if entry_time:
-      # 1. Attach Local Timezone (Asia/Karachi)
-      local_dt = entry_time.replace(tzinfo=local_tz)
-      # 2. Convert to Milliseconds timestamp automatically (handles UTC shift)
-      start_ms = int(local_dt.timestamp() * 1000)
-    else:
-      start_ms = None
-
-    df = fetch_binance_klines(
-        t["symbol"], interval="1m", limit=500, start_time=start_ms
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id"
+        " DESC"
     )
-    analysis = analyze_sl_trade(t, df)
+    sl_trades = cursor.fetchall()
+    conn.close()
 
-    analyzed_list.append({"trade": t, "analysis": analysis})
+    analyzed_list = []
+    local_tz = ZoneInfo("Asia/Karachi")
 
-  return render_template("sl_analysis.html", trades=analyzed_list)
+    for t in sl_trades:
+      entry_time = t["timestamp"]
+
+      if isinstance(entry_time, str):
+        try:
+          entry_time = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+          entry_time = None
+
+      if entry_time:
+        local_dt = entry_time.replace(tzinfo=local_tz)
+        start_ms = int(local_dt.timestamp() * 1000)
+      else:
+        start_ms = None
+
+      df = fetch_binance_klines(
+          t["symbol"], interval="1m", limit=500, start_time=start_ms
+      )
+      analysis = analyze_sl_trade(t, df)
+
+      analyzed_list.append({"trade": t, "analysis": analysis})
+
+    return render_template("sl_analysis.html", trades=analyzed_list)
+  except Exception as e:
+    send_ntfy_alert(
+        title="Route Exception: /sl-analysis",
+        message=str(e),
+        error_details=traceback.format_exc(),
+    )
+    return jsonify({"error": str(e)}), 500
+
+
+@app.route("/logs")
+def view_logs():
+  """View runtime log_data.json via dashboard"""
+  if os.path.exists(LOG_FILE):
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+      try:
+        data = json.load(f)
+        return jsonify(data)
+      except Exception:
+        return jsonify({"error": "Unable to decode log JSON"}), 500
+  return jsonify([])
 
 
 @app.route("/api/kline")
@@ -459,4 +618,5 @@ def api_kline():
 
 
 if __name__ == "__main__":
-  app.run(host="0.0.0.0", port=5000, debug=True)
+  port = int(os.environ.get("PORT", 5000))
+  app.run(host="0.0.0.0", port=port, debug=False)
