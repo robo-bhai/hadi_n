@@ -1,98 +1,278 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="row g-3 mb-4">
-    <div class="col-12 col-sm-6 col-xl-3">
-        <div class="card card-custom p-3 h-100">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <span class="text-uppercase text-muted fw-bold small">Stated Capital</span>
-                <i class="fa-solid fa-building-columns text-secondary fs-5"></i>
-            </div>
-            <div class="fs-3 fw-extrabold text-light mono-font">${{ p.stated_capital }} <span class="fs-6 text-muted fw-normal">USDT</span></div>
-            <div class="text-muted fs-7 mt-2"><i class="fa-solid fa-circle-info me-1"></i>Avail + Active Margin + Loss Capital</div>
-        </div>
+<style>
+  /* STRICT COLOR SCHEME: Pitch Black, Gold Yellow, Pure White */
+  body {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  .audit-card {
+    background-color: #050505;
+    border: 1px solid #ffd700;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(255, 215, 0, 0.1);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .audit-card:hover {
+    box-shadow: 0 0 15px rgba(255, 215, 0, 0.25);
+  }
+
+  .text-gold {
+    color: #ffd700 !important;
+  }
+
+  .border-gold {
+    border-color: #ffd700 !important;
+  }
+
+  .badge-gold {
+    background-color: #ffd700;
+    color: #000000;
+    font-weight: 800;
+  }
+
+  .mono-font {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  .table-audit {
+    --bs-table-bg: transparent;
+    --bs-table-color: #ffffff;
+    border-color: #222222;
+  }
+
+  .table-audit tr td {
+    padding: 12px 16px;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .pnl-plus {
+    color: #28a745 !important;
+  }
+
+  .pnl-minus {
+    color: #dc3545 !important;
+  }
+
+  .progress-bar-gold {
+    background-color: #ffd700;
+  }
+</style>
+
+<div class="container-fluid py-2 px-0">
+  
+  <!-- 1. TOP HEADER & AUDIT RISK STATUS BAR -->
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 pb-3 border-bottom border-gold">
+    <div>
+      <h3 class="fw-bold text-gold mb-0 d-flex align-items-center gap-2">
+        <i class="fa-solid fa-shield-halved"></i> INSTITUTIONAL PORTFOLIO AUDIT REPORT
+      </h3>
+      <span class="text-white opacity-75 small">System Identity & Quant Risk Protocol Engine</span>
     </div>
+    <div class="d-flex align-items-center gap-3 mt-2 mt-md-0">
+      <div class="text-end">
+        <span class="d-block text-white opacity-75 small text-uppercase">Account Risk Profile</span>
+        <span class="badge badge-gold fs-6">{{ audit.risk_level }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. CORE BALANCE SHEET METRICS (TOP CARDS) -->
+  <div class="row g-3 mb-4">
+    <!-- Account Equity -->
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="audit-card p-3 h-100">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <span class="text-white opacity-75 fw-bold small text-uppercase">Total Account Equity</span>
+          <i class="fa-solid fa-wallet text-gold fs-5"></i>
+        </div>
+        <div class="fs-3 fw-extrabold text-gold mono-font">
+          ${{ "%.2f"|format(audit.total_account_equity) }}
+        </div>
+        <div class="text-white opacity-50 fs-7 mt-2">
+          <i class="fa-solid fa-link text-gold me-1"></i>Liquid + Active Margin + Float PnL
+        </div>
+      </div>
+    </div>
+
+    <!-- Starting Base Capital -->
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="audit-card p-3 h-100">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <span class="text-white opacity-75 fw-bold small text-uppercase">Base Stated Capital</span>
+          <i class="fa-solid fa-vault text-gold fs-5"></i>
+        </div>
+        <div class="fs-3 fw-extrabold text-white mono-font">
+          ${{ "%.2f"|format(audit.base_starting_capital) }}
+        </div>
+        <div class="text-white opacity-50 fs-7 mt-2">
+          <i class="fa-solid fa-database me-1"></i>Initial Registered Seed Capital
+        </div>
+      </div>
+    </div>
+
+    <!-- Available Free Capital -->
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="audit-card p-3 h-100">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <span class="text-white opacity-75 fw-bold small text-uppercase">Available Free Capital</span>
+          <i class="fa-solid fa-coins text-gold fs-5"></i>
+        </div>
+        <div class="fs-3 fw-extrabold text-white mono-font">
+          ${{ "%.2f"|format(audit.available_capital) }}
+        </div>
+        <div class="text-white opacity-50 fs-7 mt-2">
+          <i class="fa-solid fa-circle-check text-gold me-1"></i>Ready For New Orders
+        </div>
+      </div>
+    </div>
+
+    <!-- All-Time ROI % -->
+    <div class="col-12 col-sm-6 col-xl-3">
+      <div class="audit-card p-3 h-100">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <span class="text-white opacity-75 fw-bold small text-uppercase">All-Time Live ROI</span>
+          <i class="fa-solid fa-chart-line text-gold fs-5"></i>
+        </div>
+        <div class="fs-3 fw-extrabold mono-font {% if audit.all_time_roi_pct >= 0 %}pnl-plus{% else %}pnl-minus{% endif %}">
+          {{ "%+.2f"|format(audit.all_time_roi_pct) }}%
+        </div>
+        <div class="text-white opacity-50 fs-7 mt-2">
+          <i class="fa-solid fa-calculator me-1"></i>Compounded Portfolio Growth
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. DETAILED PERFORMANCE & AUDIT METRICS -->
+  <div class="row g-3">
     
-    <div class="col-12 col-sm-6 col-xl-3">
-        <div class="card card-custom p-3 h-100">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <span class="text-uppercase text-muted fw-bold small">Available Liquid</span>
-                <i class="fa-solid fa-coins text-info fs-5"></i>
-            </div>
-            <div class="fs-3 fw-extrabold text-info mono-font">${{ p.available_capital }} <span class="fs-6 text-info opacity-75 fw-normal">USDT</span></div>
-            <div class="text-muted fs-7 mt-2"><i class="fa-solid fa-circle-check text-success me-1"></i>Ready for new execution</div>
+    <!-- LEFT COLUMN: QUANTITATIVE AUDIT RATIOS -->
+    <div class="col-12 col-lg-7">
+      <div class="audit-card p-4 h-100">
+        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+          <h5 class="fw-bold text-gold mb-0 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-sliders"></i> Algorithmic Performance Ratios
+          </h5>
+          <span class="badge bg-dark text-gold border border-gold">Audited Data</span>
         </div>
+
+        <div class="table-responsive">
+          <table class="table table-audit align-middle mb-0">
+            <tbody>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-trophy text-gold me-2"></i>Win Rate (%)</td>
+                <td class="text-end fw-bold text-white mono-font fs-6">{{ "%.2f"|format(audit.win_rate_pct) }}%</td>
+              </tr>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-scale-balanced text-gold me-2"></i>Profit Factor (Gross Win / Gross Loss)</td>
+                <td class="text-end fw-bold text-gold mono-font fs-6">{{ "%.2f"|format(audit.profit_factor) }}</td>
+              </tr>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-chart-pie text-gold me-2"></i>Sharpe Ratio (Risk Adjusted)</td>
+                <td class="text-end fw-bold text-white mono-font fs-6">{{ "%.2f"|format(audit.sharpe_ratio) }}</td>
+              </tr>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-arrow-trend-down text-danger me-2"></i>Max Peak-to-Trough Drawdown</td>
+                <td class="text-end fw-bold pnl-minus mono-font fs-6">-{{ "%.2f"|format(audit.max_drawdown_pct) }}%</td>
+              </tr>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-bullseye text-gold me-2"></i>Mathematical Expectancy</td>
+                <td class="text-end fw-bold text-gold mono-font fs-6">${{ "%+.2f"|format(audit.expectancy_per_trade) }} / trade</td>
+              </tr>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-money-bill-trend-up text-gold me-2"></i>Avg Win vs Avg Loss</td>
+                <td class="text-end fw-bold text-white mono-font fs-6">
+                  <span class="pnl-plus">${{ "%.2f"|format(audit.avg_win_usdt) }}</span> / 
+                  <span class="pnl-minus">${{ "%.2f"|format(audit.avg_loss_usdt) }}</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="text-white opacity-75"><i class="fa-solid fa-arrow-right-arrow-left text-gold me-2"></i>Payoff Ratio</td>
+                <td class="text-end fw-bold text-white mono-font fs-6">{{ "%.2f"|format(audit.payoff_ratio) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
-    <div class="col-12 col-sm-6 col-xl-3">
-        <div class="card card-custom p-3 h-100">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <span class="text-uppercase text-muted fw-bold small">Freezed Margin</span>
-                <i class="fa-solid fa-lock text-warning fs-5"></i>
-            </div>
-            <div class="fs-3 fw-extrabold text-warning mono-font">${{ p.freezed_balance }} <span class="fs-6 text-warning opacity-75 fw-normal">USDT</span></div>
-            <div class="text-muted fs-7 mt-2"><i class="fa-solid fa-chart-pie me-1"></i>Locked in active positions</div>
+    <!-- RIGHT COLUMN: FINANCIAL PnL & MARGIN BREAKDOWN -->
+    <div class="col-12 col-lg-5">
+      <div class="audit-card p-4 h-100 d-flex flex-column justify-content-between">
+        <div>
+          <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom border-secondary">
+            <h5 class="fw-bold text-gold mb-0 d-flex align-items-center gap-2">
+              <i class="fa-solid fa-file-invoice-dollar"></i> Financial PnL Audit
+            </h5>
+            <span class="text-white opacity-50 small">Live Ledger</span>
+          </div>
+
+          <div class="table-responsive mb-3">
+            <table class="table table-audit align-middle mb-0">
+              <tbody>
+                <tr>
+                  <td class="text-white opacity-75"><i class="fa-solid fa-wave-square text-gold me-2"></i>Floating PnL (Unrealized)</td>
+                  <td class="text-end fw-bold mono-font {% if audit.unrealized_floating_pnl >= 0 %}pnl-plus{% else %}pnl-minus{% endif %}">
+                    ${{ "%+.2f"|format(audit.unrealized_floating_pnl) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td class="text-white opacity-75"><i class="fa-solid fa-hand-holding-dollar text-gold me-2"></i>Realized Net PnL</td>
+                  <td class="text-end fw-bold mono-font {% if audit.realized_net_pnl >= 0 %}pnl-plus{% else %}pnl-minus{% endif %}">
+                    ${{ "%+.2f"|format(audit.realized_net_pnl) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td class="text-white opacity-75"><i class="fa-solid fa-circle-plus pnl-plus me-2"></i>Gross Profit</td>
+                  <td class="text-end fw-bold pnl-plus mono-font">${{ "%.2f"|format(audit.gross_profit) }}</td>
+                </tr>
+                <tr>
+                  <td class="text-white opacity-75"><i class="fa-solid fa-circle-minus pnl-minus me-2"></i>Gross Loss</td>
+                  <td class="text-end fw-bold pnl-minus mono-font">${{ "%.2f"|format(audit.gross_loss) }}</td>
+                </tr>
+                <tr>
+                  <td class="text-white opacity-75"><i class="fa-solid fa-boxes-stacked text-gold me-2"></i>Total Audited Trades</td>
+                  <td class="text-end fw-bold text-white mono-font">{{ audit.total_trades_audited }} ({{ audit.active_trades_count }} Active)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
+
+        <!-- MARGIN RISK EXPOSURE BAR -->
+        <div class="pt-3 border-top border-secondary">
+          <div class="d-flex justify-content-between text-white fs-7 mb-1">
+            <span>Margin Utilization Rate</span>
+            <span class="fw-bold text-gold mono-font">{{ audit.margin_utilization_pct }}%</span>
+          </div>
+          <div class="progress bg-dark border border-secondary" style="height: 10px;">
+            <div class="progress-bar progress-bar-gold" role="progressbar" 
+                 style="width: {{ audit.margin_utilization_pct }}%;" 
+                 aria-valuenow="{{ audit.margin_utilization_pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+          </div>
+          <div class="d-flex justify-content-between text-white opacity-50 fs-7 mt-2">
+            <span>Locked Margin: ${{ "%.2f"|format(audit.active_margin_frozen) }}</span>
+            <span>Effective Leverage: {{ audit.effective_leverage }}x</span>
+          </div>
+        </div>
+
+      </div>
     </div>
 
-    <div class="col-12 col-sm-6 col-xl-3">
-        <div class="card card-custom p-3 h-100">
-            <div class="d-flex justify-content-between align-items-start mb-2">
-                <span class="text-uppercase text-muted fw-bold small">Live Overall Balance</span>
-                <i class="fa-solid fa-chart-line text-primary fs-5"></i>
-            </div>
-            <div class="fs-3 fw-extrabold {% if p.floating_pnl >= 0 %}text-success{% else %}text-danger{% endif %} mono-font">
-                ${{ p.total_overall_balance }} <span class="fs-6 opacity-75 fw-normal">USDT</span>
-            </div>
-            <div class="text-muted fs-7 mt-2"><i class="fa-solid fa-arrows-rotate me-1"></i>Base Capital + Floating PnL</div>
-        </div>
-    </div>
-</div>
+  </div>
 
-<div class="row g-3">
-    <div class="col-12 col-lg-8">
-        <div class="card card-custom p-4">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <h5 class="fw-bold text-info mb-0 d-flex align-items-center gap-2">
-                    <i class="fa-solid fa-sliders"></i> System Performance Breakdown
-                </h5>
-                <span class="badge bg-secondary opacity-75">Realtime</span>
-            </div>
-            
-            <div class="table-responsive">
-                <table class="table table-dark table-hover align-middle mb-0 border-top border-secondary">
-                    <tbody>
-                        <tr>
-                            <td class="text-muted py-3"><i class="fa-solid fa-bolt text-warning me-2"></i>Total Active Positions</td>
-                            <td class="text-end fw-bold fs-6 text-warning mono-font">{{ p.total_active }} Trades</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted py-3"><i class="fa-solid fa-box-archive text-secondary me-2"></i>Total Closed Trades History</td>
-                            <td class="text-end fw-bold fs-6 text-light mono-font">{{ p.total_closed }} Trades</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted py-3"><i class="fa-solid fa-wave-square text-info me-2"></i>Active Trades Floating PnL</td>
-                            <td class="text-end fw-bold fs-6 mono-font {% if p.floating_pnl >= 0 %}pnl-positive{% else %}pnl-negative{% endif %}">
-                                ${{ p.floating_pnl }} USDT
-                            </td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted py-3"><i class="fa-solid fa-hand-holding-dollar text-success me-2"></i>Closed Trades Realized PnL</td>
-                            <td class="text-end fw-bold fs-6 mono-font {% if p.realized_pnl >= 0 %}pnl-positive{% else %}pnl-negative{% endif %}">
-                                ${{ p.realized_pnl }} USDT
-                            </td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted py-3"><i class="fa-solid fa-percent text-primary me-2"></i>System Live ROI</td>
-                            <td class="text-end fw-extrabold fs-4 mono-font {% if p.live_roi >= 0 %}pnl-positive{% else %}pnl-negative{% endif %}">
-                                {{ p.live_roi }}%
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+  <!-- 4. FOOTER AUDIT STAMP -->
+  <div class="text-center mt-4 pt-3 border-top border-secondary">
+    <p class="text-white opacity-50 fs-7 mb-0">
+      <i class="fa-solid fa-lock text-gold me-1"></i> Quant Trading Portfolio Engine • Encrypted Database Verified • All Values Reconciled
+    </p>
+  </div>
+
 </div>
 
 {% endblock %}
