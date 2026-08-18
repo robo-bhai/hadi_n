@@ -41,6 +41,7 @@ BINANCE_DEPTH_URL = 'https://data-api.binance.vision/api/v3/depth'
 BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
 
 BINANCE_FEE_RATE = 0.00075
+EVENT_ALERT_TOPIC = os.getenv('LIVE_MON_PAPER', '').strip()
 
 
 # =========================================================
@@ -95,6 +96,136 @@ def get_db_connection():
   # Fallback SQLite
   conn = sqlite3.connect('trading_system.db')
   return conn, 'SQLITE'
+
+
+# =========================================================
+# 🛠️ DATABASE UTILITIES & NOTIFICATION HELPERS
+# =========================================================
+def update_sl_in_db(trade_id, new_sl):
+  """Updates Stop Loss price in DB for a given trade."""
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
+  ph = '%s' if db_type == 'MYSQL' else '?'
+
+  query = f'UPDATE trades SET sl_price = {ph} WHERE id = {ph}'
+  cursor.execute(query, (float(new_sl), int(trade_id)))
+  conn.commit()
+  conn.close()
+
+
+def send_ntfy_notification(
+    title, message_body, tags=None, topic=EVENT_ALERT_TOPIC
+):
+  """Sends push notification via NTFY."""
+  if not topic:
+    return
+
+  url = f'https://ntfy.sh/{topic}'
+  headers = {'Title': title}
+  if tags:
+    headers['Tags'] = ','.join(tags)
+
+  try:
+    requests.post(url, data=message_body.encode('utf-8'), headers=headers)
+  except Exception as e:
+    print(f'⚠️ NTFY Notification error: {e}')
+
+
+# =========================================================
+# 🛡️ TRAILING & BREAKEVEN LOGIC INTEGRATION
+# =========================================================
+def check_trailing_and_breakeven(trade, current_price):
+  """Multi-Level USDT Lock Logic:
+
+  1. Profit >= +0.15 USDT -> SL locked at +0.05 USDT
+  2. Profit >= +0.30 USDT -> SL locked at +0.15 USDT
+  3. Profit >= +1.00 USDT -> SL locked at +0.50 USDT
+  """
+  entry = trade['entry_price']
+  sl = trade['sl_price']
+  direction = trade['direction'].upper()
+  t_id = trade['id']
+  symbol = trade.get('symbol', '')
+  pos_val = trade.get('pos_value', 0.0)
+
+  if pos_val <= 0 or entry <= 0:
+    return sl
+
+  updated = False
+  new_sl = sl
+  locked_profit = 0.0
+
+  if direction in ['LONG', 'BUY']:
+    current_pnl_usdt = pos_val * ((current_price - entry) / entry)
+
+    # Multi-level targets check (Highest level first)
+    if current_pnl_usdt >= 1.00:
+      target_sl = entry * (1 + (0.50 / pos_val))
+      locked_profit = 0.50
+    elif current_pnl_usdt >= 0.30:
+      target_sl = entry * (1 + (0.15 / pos_val))
+      locked_profit = 0.15
+    elif current_pnl_usdt >= 0.15:
+      target_sl = entry * (1 + (0.05 / pos_val))
+      locked_profit = 0.05
+    else:
+      target_sl = sl
+
+    # SL move strictly upwards
+    if target_sl > sl:
+      new_sl = target_sl
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(
+          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+      )
+
+  elif direction in ['SHORT', 'SELL']:
+    current_pnl_usdt = pos_val * ((entry - current_price) / entry)
+
+    # Multi-level targets check for SHORT
+    if current_pnl_usdt >= 1.00:
+      target_sl = entry * (1 - (0.50 / pos_val))
+      locked_profit = 0.50
+    elif current_pnl_usdt >= 0.30:
+      target_sl = entry * (1 - (0.15 / pos_val))
+      locked_profit = 0.15
+    elif current_pnl_usdt >= 0.15:
+      target_sl = entry * (1 - (0.05 / pos_val))
+      locked_profit = 0.05
+    else:
+      target_sl = sl
+
+    # SL move strictly downwards for SHORT
+    if sl == 0 or target_sl < sl:
+      new_sl = target_sl
+      update_sl_in_db(t_id, new_sl)
+      trade['sl_price'] = new_sl
+      updated = True
+      print(
+          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+      )
+
+  if updated:
+    msg = f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} USDT) FOR TRADE #{t_id}\n'
+    msg += '───────────────────────────\n'
+    msg += f'📌 Symbol    : {symbol} [{direction}]\n'
+    msg += f'📍 Entry     : ${entry:.5f}\n'
+    msg += f'🛡️ Locked SL : ${new_sl:.5f}\n'
+    msg += f'💵 Peak PnL  : +${current_pnl_usdt:.2f} USDT\n'
+    msg += '───────────────────────────'
+
+    send_ntfy_notification(
+        title=f'🛡️ Profit Locked (+${locked_profit:.2f} USDT): {symbol}',
+        message_body=msg,
+        tags=['shield', 'moneybag'],
+        topic=EVENT_ALERT_TOPIC,
+    )
+
+  return new_sl
 
 
 # =========================================================
@@ -199,14 +330,9 @@ def fetch_full_trade_klines(symbol, start_time_ms):
 def generate_trade_chart(
     symbol, df, entry_p, sl_p, tp1_p, tp2_p, live_p, output_filename
 ):
-  """Generates a dark-themed, professional crypto trading candlestick chart with
-
-  EMA/SMA technical indicators and target level lines.
-  """
   if df is None or df.empty:
     return None
 
-  # Sample candles for rendering performance if dataset is massive
   chart_df = df.tail(120).copy() if len(df) > 120 else df.copy()
 
   chart_df['datetime'] = pd.to_datetime(chart_df['time'], unit='ms')
@@ -218,12 +344,10 @@ def generate_trade_chart(
   fig.patch.set_facecolor('#111827')
   ax.set_facecolor('#1F2937')
 
-  # Plot Candlesticks
   width = 0.0004
   up = chart_df[chart_df['close'] >= chart_df['open']]
   down = chart_df[chart_df['close'] < chart_df['open']]
 
-  # Green Candles
   ax.vlines(
       up['datetime'],
       up['low'],
@@ -241,7 +365,6 @@ def generate_trade_chart(
       alpha=0.9,
   )
 
-  # Red Candles
   ax.vlines(
       down['datetime'],
       down['low'],
@@ -259,7 +382,6 @@ def generate_trade_chart(
       alpha=0.9,
   )
 
-  # Overlay Technical Indicators
   ax.plot(
       chart_df['datetime'],
       chart_df['ema9'],
@@ -275,7 +397,6 @@ def generate_trade_chart(
       label='SMA 20',
   )
 
-  # Level Lines
   ax.axhline(
       entry_p,
       color='#3B82F6',
@@ -346,10 +467,7 @@ def generate_trade_chart(
 
 
 # =========================================================
-# 🔄 PROCESS ACTIVE TRADES (QUIET BACKGROUND EVALUATION)
-# =========================================================
-# =========================================================
-# 🔄 PROCESS ACTIVE TRADES (FIXED QUERY PARAMETERS)
+# 🔄 PROCESS ACTIVE TRADES (INTEGRATED WITH TRAILING LOGIC)
 # =========================================================
 def process_active_trades():
   print('\n' + '=' * 60)
@@ -383,7 +501,7 @@ def process_active_trades():
   if not active_trades:
     print('ℹ️ No active trades currently present in the database.')
 
-  for trade in active_trades:
+  for trade_tuple in active_trades:
     (
         t_id,
         t_time_str,
@@ -395,8 +513,18 @@ def process_active_trades():
         tp2_p,
         margin,
         pos_val,
-    ) = trade
+    ) = trade_tuple
     print(f'\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]')
+
+    # Convert tuple to dictionary format for trailing logic
+    trade_dict = {
+        'id': t_id,
+        'symbol': symbol,
+        'direction': direction,
+        'entry_price': entry_p,
+        'sl_price': sl_p,
+        'pos_value': pos_val,
+    }
 
     try:
       dt_obj = datetime.strptime(str(t_time_str), '%Y-%m-%d %H:%M:%S')
@@ -424,6 +552,9 @@ def process_active_trades():
           row['close'],
       )
       time_elapsed_seconds = (c_time_ms - start_ms) / 1000.0
+
+      # 🛡️ Trailing Check for current candle close
+      sl_p = check_trailing_and_breakeven(trade_dict, c_close)
 
       if direction == 'LONG':
         if c_close >= c_open:
@@ -513,7 +644,6 @@ def process_active_trades():
       exit_fee = exit_value * BINANCE_FEE_RATE
       net_pnl = gross_pnl - (entry_fee + exit_fee)
 
-      # Fixed Query 1: Update Trade Record
       q_trade = f'UPDATE trades SET status = {ph}, pnl = {ph} WHERE id = {ph}'
       cursor.execute(q_trade, (str(status), float(net_pnl), int(t_id)))
 
@@ -521,7 +651,6 @@ def process_active_trades():
       avail_cap += margin + net_pnl
       total_cap += net_pnl
 
-      # Fixed Query 2: Update Portfolio Record
       q_port = (
           f'UPDATE portfolio SET total_capital = {ph}, available_capital ='
           f' {ph}, frozen_margin = {ph} WHERE id = {ph}'
@@ -542,10 +671,8 @@ def process_active_trades():
   print('=' * 60 + '\n')
 
 
-
 # =========================================================
-# =========================================================
-# 📄 EXPERT PDF REPORT GENERATOR (FIXED TUPLE UNPACKING)
+# 📄 EXPERT PDF REPORT GENERATOR
 # =========================================================
 def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
   conn, db_type = get_db_connection()
@@ -595,7 +722,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
         else f'{p:.2f}' if p else '0.00'
     )
 
-  # Setup PDF Canvas
   doc = SimpleDocTemplate(
       pdf_filename,
       pagesize=A4,
@@ -607,7 +733,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
   story = []
   styles = getSampleStyleSheet()
 
-  # Custom Typography Styles
   title_style = ParagraphStyle(
       'DocTitle',
       parent=styles['Normal'],
@@ -650,7 +775,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
       alignment=0,
   )
 
-  # Document Header
   now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
   story.append(
       Paragraph('⚡ QUANTITATIVE TRADING EXPERT REPORT', title_style)
@@ -670,7 +794,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
       )
   )
 
-  # 1. Executive Summary Table
   story.append(Paragraph('📊 EXECUTIVE PORTFOLIO SUMMARY', sec_heading))
 
   summary_data = [
@@ -716,7 +839,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
   story.append(summary_table)
   story.append(Spacer(1, 12))
 
-  # 2. Detailed Active Positions Grid Table
   story.append(
       Paragraph(
           f'⚡ ACTIVE TRADING POSITIONS ({len(active_trades)})', sec_heading
@@ -744,7 +866,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
     active_grid = [[Paragraph(h, cell_bold) for h in active_headers]]
 
     for r in active_trades:
-      # ✅ EXACT 13 VALUES UNPACKED HERE
       (
           t_id,
           t_time,
@@ -806,14 +927,12 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
 
   story.append(Spacer(1, 14))
 
-  # 3. Market Candlestick Technical Analysis Charts
   story.append(
       Paragraph('📈 LIVE TECHNICAL MARKET ANALYSIS CHARTS', sec_heading)
   )
 
   if active_trades:
     for index, r in enumerate(active_trades[:4]):
-      # ✅ EXACT 13 VALUES UNPACKED HERE
       (
           t_id,
           t_time_str,
@@ -856,7 +975,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
 
   story.append(Spacer(1, 10))
 
-  # 4. Closed Trades Audit Log Table
   story.append(Paragraph('📑 RECENT CLOSED TRADES HISTORY', sec_heading))
 
   if not closed_trades:
@@ -877,7 +995,6 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
     closed_grid = [[Paragraph(h, cell_bold) for h in closed_headers]]
 
     for r in closed_trades[:15]:
-      # ✅ EXACT 13 VALUES UNPACKED HERE
       (
           t_id,
           t_time,
@@ -925,11 +1042,9 @@ def build_expert_pdf_report(pdf_filename='Expert_Trading_Report.pdf'):
     )
     story.append(closed_table)
 
-  # Build PDF
   doc.build(story)
   print(f'✅ Professional PDF Report successfully generated: {pdf_filename}')
   return pdf_filename
-
 
 
 # =========================================================
