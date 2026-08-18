@@ -11,17 +11,16 @@ import requests
 app = Flask(__name__)
 
 # =========================================================
-# 🔑 EXACT DB CREDENTIALS & CONNECTION SETTINGS
+# 🔑 DB CREDENTIALS & CONNECTION SETTINGS
 # =========================================================
 DB_HOST = os.getenv("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
 DB_USER = os.getenv("DB_USER", "avnadmin")
-DB_PASS = os.getenv("DB_PASS", "")  # Read from GitHub Secret DB_PASS
+DB_PASS = os.getenv("DB_PASS", "")  # GitHub Secret or Local Env
 DB_NAME = os.getenv("DB_NAME", "defaultdb")
 DB_PORT = int(os.getenv("DB_PORT", "23464"))
 
 
 def get_db_connection():
-  print("⏳ Connecting to Aiven MySQL Database...")
   try:
     conn = mysql.connector.connect(
         host=DB_HOST,
@@ -29,10 +28,9 @@ def get_db_connection():
         user=DB_USER,
         password=DB_PASS,
         database=DB_NAME,
-        ssl_disabled=False,  # Aiven ke liye SSL zaroori hai
+        ssl_disabled=False,
         connect_timeout=20,
     )
-    print("✅ Connected Successfully!")
     return conn
   except Exception as err:
     print(f"❌ MySQL Connection Error: {err}")
@@ -212,74 +210,191 @@ def analyze_sl_trade(trade, df):
 @app.route("/")
 @app.route("/portfolio")
 def tab_portfolio():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed. Check server logs."
+  try:
+    conn = get_db_connection()
+    if not conn:
+      return "Database Connection Failed. Check server logs.", 500
 
-  cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(dictionary=True)
 
-  cursor.execute("SELECT * FROM portfolio WHERE id = 1")
-  port = cursor.fetchone() or {
-      "total_capital": 100.0,
-      "available_capital": 100.0,
-      "frozen_margin": 0.0,
-  }
+    # 1. Fetch Portfolio Stated Balance
+    cursor.execute("SELECT * FROM portfolio WHERE id = 1")
+    port = cursor.fetchone() or {
+        "total_capital": 100.0,
+        "available_capital": 100.0,
+        "frozen_margin": 0.0,
+    }
 
-  cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
-  active_trades = cursor.fetchall()
+    # 2. Fetch Active Trades
+    cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
+    active_trades = cursor.fetchall() or []
 
-  cursor.execute("SELECT * FROM trades WHERE status != 'ACTIVE'")
-  closed_trades = cursor.fetchall()
+    # 3. Fetch Closed Trades
+    cursor.execute(
+        "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id ASC"
+    )
+    closed_trades = cursor.fetchall() or []
 
-  total_floating_pnl = 0.0
-  active_margin = 0.0
+    # Active Trades Floating Calculations
+    total_floating_pnl = 0.0
+    active_margin = 0.0
+    total_active_pos_val = 0.0
 
-  for t in active_trades:
-    live_p = fetch_live_price(t["symbol"])
-    entry = float(t["entry_price"])
-    pos_val = float(t["pos_value"])
-    margin = float(t["margin_frozen"])
-    active_margin += margin
+    for t in active_trades:
+      symbol = t.get("symbol", "BTCUSDT")
+      live_p = fetch_live_price(symbol)
+      entry = float(t.get("entry_price") or 0.0)
+      pos_val = float(t.get("pos_value") or 0.0)
+      margin = float(t.get("margin_frozen") or 0.0)
+      direction = str(t.get("direction", "")).upper()
 
-    if str(t["direction"]).upper() in ["LONG", "BUY"]:
-      float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
+      active_margin += margin
+      total_active_pos_val += pos_val
+
+      if direction in ["LONG", "BUY"]:
+        float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
+      else:
+        float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+
+      total_floating_pnl += float_pnl
+
+    # Closed Trades Statistical Audit
+    total_closed_count = len(closed_trades)
+    winning_trades = []
+    losing_trades = []
+    pnls_history = []
+
+    for t in closed_trades:
+      pnl = float(t.get("pnl") or 0.0)
+      pnls_history.append(pnl)
+      if pnl > 0:
+        winning_trades.append(pnl)
+      elif pnl < 0:
+        losing_trades.append(abs(pnl))
+
+    wins_count = len(winning_trades)
+    losses_count = len(losing_trades)
+    total_gross_profit = sum(winning_trades)
+    total_gross_loss = sum(losing_trades)
+    net_realized_pnl = total_gross_profit - total_gross_loss
+
+    win_rate = (
+        (wins_count / total_closed_count * 100)
+        if total_closed_count > 0
+        else 0.0
+    )
+
+    if total_gross_loss > 0:
+      profit_factor = total_gross_profit / total_gross_loss
     else:
-      float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+      profit_factor = total_gross_profit if total_gross_profit > 0 else 1.0
 
-    total_floating_pnl += float_pnl
+    avg_win = (total_gross_profit / wins_count) if wins_count > 0 else 0.0
+    avg_loss = (total_gross_loss / losses_count) if losses_count > 0 else 0.0
+    payoff_ratio = (avg_win / avg_loss) if avg_loss > 0 else avg_win
 
-  closed_realized_pnl = sum(float(t["pnl"] or 0.0) for t in closed_trades)
-  loss_trades_capital = sum(
-      abs(float(t["pnl"])) for t in closed_trades if float(t["pnl"] or 0.0) < 0
-  )
+    loss_rate = 1.0 - (win_rate / 100.0)
+    expectancy = ((win_rate / 100.0) * avg_win) - (loss_rate * avg_loss)
 
-  avail_cap = float(port["available_capital"])
-  freezed_bal = float(port["frozen_margin"])
+    sharpe_ratio = 0.0
+    max_drawdown_pct = 0.0
 
-  # Stated Capital Calculation
-  stated_capital = avail_cap + active_margin + loss_trades_capital
-  total_overall_balance = float(port["total_capital"]) + total_floating_pnl
-  live_roi = (
-      ((total_overall_balance - stated_capital) / stated_capital) * 100
-      if stated_capital > 0
-      else 0.0
-  )
+    if total_closed_count > 1 and len(pnls_history) > 1:
+      mean_ret = sum(pnls_history) / len(pnls_history)
+      variance = sum((x - mean_ret) ** 2 for x in pnls_history) / len(
+          pnls_history
+      )
+      std_dev = variance**0.5
 
-  conn.close()
+      if std_dev > 0:
+        sharpe_ratio = (mean_ret / std_dev) * (total_closed_count**0.5)
 
-  data = {
-      "stated_capital": round(stated_capital, 2),
-      "available_capital": round(avail_cap, 2),
-      "freezed_balance": round(freezed_bal, 2),
-      "active_margin": round(active_margin, 2),
-      "total_active": len(active_trades),
-      "total_closed": len(closed_trades),
-      "floating_pnl": round(total_floating_pnl, 2),
-      "realized_pnl": round(closed_realized_pnl, 2),
-      "live_roi": round(live_roi, 2),
-      "total_overall_balance": round(total_overall_balance, 2),
-  }
-  return render_template("portfolio.html", audit=audit)
+      cum_pnl = 0
+      peak = 0
+      max_dd = 0
+      for p in pnls_history:
+        cum_pnl += p
+        if cum_pnl > peak:
+          peak = cum_pnl
+        dd = peak - cum_pnl
+        if dd > max_dd:
+          max_dd = dd
+
+      base_cap = float(port.get("total_capital") or 100.0)
+      max_drawdown_pct = (max_dd / base_cap * 100) if base_cap > 0 else 0.0
+
+    # Account Balance Totals
+    avail_cap = float(port.get("available_capital") or 0.0)
+    base_starting_capital = float(port.get("total_capital") or 100.0)
+
+    total_account_equity = (
+        avail_cap + active_margin + net_realized_pnl + total_floating_pnl
+    )
+
+    all_time_roi = (
+        (
+            (total_account_equity - base_starting_capital)
+            / base_starting_capital
+        )
+        * 100
+        if base_starting_capital > 0
+        else 0.0
+    )
+
+    effective_leverage = (
+        (total_active_pos_val / total_account_equity)
+        if total_account_equity > 0
+        else 0.0
+    )
+    margin_utilization_pct = (
+        (active_margin / total_account_equity * 100)
+        if total_account_equity > 0
+        else 0.0
+    )
+
+    if margin_utilization_pct > 60:
+      risk_level = "HIGH EXPOSURE"
+    elif margin_utilization_pct > 25:
+      risk_level = "BALANCED"
+    else:
+      risk_level = "CONSERVATIVE"
+
+    conn.close()
+
+    # Dictionary completely synchronized with portfolio.html Jinja tags
+    audit = {
+        "base_starting_capital": round(base_starting_capital, 2),
+        "available_capital": round(avail_cap, 2),
+        "active_margin_frozen": round(active_margin, 2),
+        "total_account_equity": round(total_account_equity, 2),
+        "unrealized_floating_pnl": round(total_floating_pnl, 2),
+        "realized_net_pnl": round(net_realized_pnl, 2),
+        "gross_profit": round(total_gross_profit, 2),
+        "gross_loss": round(total_gross_loss, 2),
+        "all_time_roi_pct": round(all_time_roi, 2),
+        "total_trades_audited": total_closed_count + len(active_trades),
+        "closed_trades_count": total_closed_count,
+        "active_trades_count": len(active_trades),
+        "win_rate_pct": round(win_rate, 2),
+        "profit_factor": round(profit_factor, 2),
+        "payoff_ratio": round(payoff_ratio, 2),
+        "expectancy_per_trade": round(expectancy, 2),
+        "avg_win_usdt": round(avg_win, 2),
+        "avg_loss_usdt": round(avg_loss, 2),
+        "sharpe_ratio": round(sharpe_ratio, 2),
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
+        "effective_leverage": round(effective_leverage, 2),
+        "margin_utilization_pct": round(margin_utilization_pct, 1),
+        "risk_level": risk_level,
+    }
+
+    return render_template("portfolio.html", audit=audit)
+
+  except Exception as e:
+    import traceback
+
+    traceback.print_exc()
+    return jsonify({"error": "Internal Error", "details": str(e)}), 500
 
 
 @app.route("/active")
@@ -290,7 +405,7 @@ def tab_active_trades():
 
   cursor = conn.cursor(dictionary=True)
   cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
-  trades = cursor.fetchall()
+  trades = cursor.fetchall() or []
   conn.close()
 
   parsed_trades = []
@@ -348,7 +463,7 @@ def tab_closed_trades():
   cursor.execute(
       "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id DESC"
   )
-  trades = cursor.fetchall()
+  trades = cursor.fetchall() or []
   conn.close()
 
   parsed_trades = []
@@ -372,7 +487,7 @@ def tab_sl_analysis():
   cursor.execute(
       "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id DESC"
   )
-  sl_trades = cursor.fetchall()
+  sl_trades = cursor.fetchall() or []
   conn.close()
 
   analyzed_list = []
