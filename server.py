@@ -1,8 +1,9 @@
 import base64
-from datetime import datetime, timezone
+from datetime import datetime
 import io
 import os
 import ssl
+from zoneinfo import ZoneInfo  # Built-in in Python 3.9+
 from flask import Flask, jsonify, render_template, request
 import mysql.connector
 import pandas as pd
@@ -29,7 +30,7 @@ def get_db_connection():
         user=DB_USER,
         password=DB_PASS,
         database=DB_NAME,
-        ssl_disabled=False,  # Aiven ke liye SSL zaroori hai
+        ssl_disabled=False,
         connect_timeout=20,
     )
     print("✅ Connected Successfully!")
@@ -41,51 +42,35 @@ def get_db_connection():
 
 # =========================================================
 # 📊 BINANCE API HELPERS
-# =================================import pandas as pd
-import requests
-
-
-def fetch_binance_klines(symbol, interval="1m", limit=300, start_time=None):
-  """Fetches kline/candlestick data from Binance.
-
-  Uses User-Agent headers and automatic Spot API fallback for GitHub Hosted
-  Runners / Cloud IPs.
-  """
+# =========================================================
+def fetch_binance_klines(symbol, interval="1m", limit=500, start_time=None):
   symbol = symbol.replace("/", "").upper()
   if not symbol.endswith("USDT"):
     symbol += "USDT"
 
-  # 1. Custom User-Agent to prevent Python-requests blocking
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
       )
   }
-
   params = {"symbol": symbol, "interval": interval, "limit": limit}
 
-  # 2. Safe timestamp parsing
   if start_time:
     try:
       params["startTime"] = int(float(start_time))
     except Exception as e:
       print(f"⚠️ Timestamp conversion error for {symbol}: {e}")
 
-  # 3. Endpoints list: Futures primary, Spot fallback (GitHub runners often get 403 on Futures)
   endpoints = [
-      "https://fapi.binance.com/fapi/v1/klines",  # Futures API
-      "https://api.binance.com/api/v3/klines",  # Spot API (Fallback)
+      "https://fapi.binance.com/fapi/v1/klines",
+      "https://api.binance.com/api/v3/klines",
   ]
 
   for url in endpoints:
     try:
       res = requests.get(url, params=params, headers=headers, timeout=10)
-
       if res.status_code == 200:
         data = res.json()
-
-        # Ensure valid list data is received
         if isinstance(data, list) and len(data) > 0:
           df = pd.DataFrame(
               data,
@@ -104,26 +89,22 @@ def fetch_binance_klines(symbol, interval="1m", limit=300, start_time=None):
                   "ignore",
               ],
           )
-
           cols = ["open", "high", "low", "close", "volume"]
           df[cols] = df[cols].astype(float)
           df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
           return df
-
-      print(
-          f"⚠️ Binance API HTTP {res.status_code} on endpoint: {url}. Trying"
-          " fallback..."
-      )
-
     except Exception as e:
       print(f"⚠️ Exception fetching klines for {symbol} on {url}: {e}")
 
-  print(f"❌ Failed to download candles for {symbol} from all Binance endpoints.")
+  # FALLBACK: If timestamp filtering yields 0 candles, fetch latest candles
+  if start_time is not None:
+    print(f"🔄 Retrying {symbol} without startTime filter...")
+    return fetch_binance_klines(symbol, interval=interval, limit=limit)
+
   return None
 
 
 def fetch_live_price(symbol):
-  """Fetches current market price with headers and fallback support."""
   symbol = symbol.replace("/", "").upper()
   if not symbol.endswith("USDT"):
     symbol += "USDT"
@@ -131,13 +112,11 @@ def fetch_live_price(symbol):
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
       )
   }
-
   endpoints = [
-      "https://fapi.binance.com/fapi/v1/ticker/price",  # Futures
-      "https://api.binance.com/api/v3/ticker/price",  # Spot
+      "https://fapi.binance.com/fapi/v1/ticker/price",
+      "https://api.binance.com/api/v3/ticker/price",
   ]
 
   for url in endpoints:
@@ -151,9 +130,7 @@ def fetch_live_price(symbol):
     except Exception:
       continue
 
-  print(f"❌ Could not fetch live price for {symbol}")
   return 0.0
-
 
 
 # =========================================================
@@ -272,10 +249,9 @@ def analyze_sl_trade(trade, df):
 def tab_portfolio():
   conn = get_db_connection()
   if not conn:
-    return "Database Connection Failed. Check server logs."
+    return "Database Connection Failed."
 
   cursor = conn.cursor(dictionary=True)
-
   cursor.execute("SELECT * FROM portfolio WHERE id = 1")
   port = cursor.fetchone() or {
       "total_capital": 100.0,
@@ -314,7 +290,6 @@ def tab_portfolio():
   avail_cap = float(port["available_capital"])
   freezed_bal = float(port["frozen_margin"])
 
-  # Stated Capital Calculation
   stated_capital = avail_cap + active_margin + loss_trades_capital
   total_overall_balance = float(port["total_capital"]) + total_floating_pnl
   live_roi = (
@@ -434,12 +409,26 @@ def tab_sl_analysis():
   conn.close()
 
   analyzed_list = []
+  # Define Local Timezone dynamically
+  local_tz = ZoneInfo("Asia/Karachi")
+
   for t in sl_trades:
     entry_time = t["timestamp"]
-    if isinstance(entry_time, str):
-      entry_time = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
 
-    start_ms = entry_time.replace(tzinfo=timezone.utc).timestamp() * 1000
+    if isinstance(entry_time, str):
+      try:
+        entry_time = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
+      except ValueError:
+        entry_time = None
+
+    if entry_time:
+      # 1. Attach Local Timezone (Asia/Karachi)
+      local_dt = entry_time.replace(tzinfo=local_tz)
+      # 2. Convert to Milliseconds timestamp automatically (handles UTC shift)
+      start_ms = int(local_dt.timestamp() * 1000)
+    else:
+      start_ms = None
+
     df = fetch_binance_klines(
         t["symbol"], interval="1m", limit=500, start_time=start_ms
     )
