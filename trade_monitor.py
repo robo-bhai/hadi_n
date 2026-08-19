@@ -152,25 +152,26 @@ def check_trailing_and_breakeven(trade, current_price):
       else pos_val * ((entry - current_price) / entry)
   )
 
-  # Define Profit Tiers: (Threshold, Net Profit Target, Locked Profit Label)
-  if is_long:
-    tiers = [(1.00, 0.50, 0.60), (0.60, 0.35, 0.40), (0.40, 0.10, 0.05)]
-  else:
-    tiers = [(1.00, 0.50, 0.50), (0.45, 0.05, 0.05), (0.30, 0.15, 0.15)]
+  # Define Profit Tiers: (Peak_Unrealized_PNL_Threshold, Net_Lock_Amount)
+  # Tier 1: $1.00+ Peak -> Lock $0.60 NET
+  # Tier 2: $0.60+ Peak -> Lock $0.35 NET
+  # Tier 3: $0.40+ Peak -> Lock $0.15 NET
+  # Tier 4: $0.28+ Peak -> Lock $0.05 NET (Early Break-Even + Fee Cover)
+  tiers = [(1.00, 0.60), (0.60, 0.35), (0.40, 0.15), (0.28, 0.05)]
 
   target_sl = sl
   locked_profit = 0.0
 
-  # Evaluate Tiers
-  for threshold, net_target, lock_label in tiers:
+  # Evaluate Tiers (Highest floor threshold triggers first)
+  for threshold, lock_amount in tiers:
     if current_pnl_usdt >= threshold:
-      target_gross = net_target + total_fee_usdt
+      target_gross = lock_amount + total_fee_usdt
       target_sl = (
           entry * (1 + (target_gross / pos_val))
           if is_long
           else entry * (1 - (target_gross / pos_val))
       )
-      locked_profit = lock_label
+      locked_profit = lock_amount
       break
 
   # Check if SL needs updating
@@ -207,6 +208,7 @@ def check_trailing_and_breakeven(trade, current_price):
     return new_sl
 
   return sl
+
 
 
 
