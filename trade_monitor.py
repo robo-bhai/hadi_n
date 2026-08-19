@@ -105,11 +105,11 @@ def update_sl_in_db(trade_id, new_sl):
 # 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
 # =========================================================
 def check_trailing_and_breakeven(trade, current_price):
-  """Multi-Level USDT Lock Logic:
+  """Multi-Level USDT Lock Logic (Net Profit After Fees):
 
-  1. Profit >= +0.15 USDT -> SL locked at +0.10 USDT (Covers Binance Fees)
-  2. Profit >= +0.30 USDT -> SL locked at +0.15 USDT
-  3. Profit >= +1.00 USDT -> SL locked at +0.50 USDT
+  1. Profit >= +0.15 USDT -> SL locked to cover Fees + Net +0.05 USDT
+  2. Profit >= +0.30 USDT -> SL locked at Net +0.15 USDT
+  3. Profit >= +1.00 USDT -> SL locked at Net +0.50 USDT
   """
   entry = trade['entry_price']
   sl = trade['sl_price']
@@ -121,6 +121,9 @@ def check_trailing_and_breakeven(trade, current_price):
   if pos_val <= 0 or entry <= 0:
     return sl
 
+  # Calculate Total Round-Trip Fee in USDT (~0.15% of position value)
+  total_fee_usdt = pos_val * (BINANCE_FEE_RATE * 2)
+
   updated = False
   new_sl = sl
   locked_profit = 0.0
@@ -128,20 +131,21 @@ def check_trailing_and_breakeven(trade, current_price):
   if direction in ['LONG', 'BUY']:
     current_pnl_usdt = pos_val * ((current_price - entry) / entry)
 
-    # Multi-level targets check (Highest level first)
     if current_pnl_usdt >= 1.00:
-      target_sl = entry * (1 + (0.50 / pos_val))
+      target_gross = 0.50 + total_fee_usdt  # Covers fees + locks $0.50 Net
+      target_sl = entry * (1 + (target_gross / pos_val))
       locked_profit = 0.50
     elif current_pnl_usdt >= 0.30:
-      target_sl = entry * (1 + (0.15 / pos_val))
+      target_gross = 0.15 + total_fee_usdt  # Covers fees + locks $0.15 Net
+      target_sl = entry * (1 + (target_gross / pos_val))
       locked_profit = 0.15
     elif current_pnl_usdt >= 0.15:
-      target_sl = entry * (1 + (0.10 / pos_val))
-      locked_profit = 0.10
+      target_gross = 0.05 + total_fee_usdt  # Covers fees + locks $0.05 Net
+      target_sl = entry * (1 + (target_gross / pos_val))
+      locked_profit = 0.05
     else:
       target_sl = sl
 
-    # SL move strictly upwards
     if target_sl > sl:
       new_sl = target_sl
       update_sl_in_db(t_id, new_sl)
@@ -149,26 +153,27 @@ def check_trailing_and_breakeven(trade, current_price):
       updated = True
       print(
           f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT)'
       )
 
   elif direction in ['SHORT', 'SELL']:
     current_pnl_usdt = pos_val * ((entry - current_price) / entry)
 
-    # Multi-level targets check for SHORT
     if current_pnl_usdt >= 1.00:
-      target_sl = entry * (1 - (0.50 / pos_val))
+      target_gross = 0.50 + total_fee_usdt
+      target_sl = entry * (1 - (target_gross / pos_val))
       locked_profit = 0.50
     elif current_pnl_usdt >= 0.30:
-      target_sl = entry * (1 - (0.15 / pos_val))
+      target_gross = 0.15 + total_fee_usdt
+      target_sl = entry * (1 - (target_gross / pos_val))
       locked_profit = 0.15
     elif current_pnl_usdt >= 0.15:
-      target_sl = entry * (1 - (0.10 / pos_val))
-      locked_profit = 0.10
+      target_gross = 0.05 + total_fee_usdt
+      target_sl = entry * (1 - (target_gross / pos_val))
+      locked_profit = 0.05
     else:
       target_sl = sl
 
-    # SL move strictly downwards for SHORT
     if sl == 0 or target_sl < sl:
       new_sl = target_sl
       update_sl_in_db(t_id, new_sl)
@@ -176,26 +181,27 @@ def check_trailing_and_breakeven(trade, current_price):
       updated = True
       print(
           f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} USDT)'
+          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT)'
       )
 
   if updated:
-    msg = f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} USDT) FOR TRADE #{t_id}\n'
+    msg = f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} NET) FOR TRADE #{t_id}\n'
     msg += '───────────────────────────\n'
-    msg += f'📌 Symbol    : {symbol} [{direction}]\n'
-    msg += f'📍 Entry     : ${entry:.5f}\n'
-    msg += f'🛡️ Locked SL : ${new_sl:.5f}\n'
-    msg += f'💵 Peak PnL  : +${current_pnl_usdt:.2f} USDT\n'
+    msg += f'📌 Symbol       : {symbol} [{direction}]\n'
+    msg += f'📍 Entry Price : ${entry:.5f}\n'
+    msg += f'🎯 New SL Price: ${new_sl:.5f}\n'
+    msg += f'💵 Peak PnL     : +${current_pnl_usdt:.2f} USDT\n'
     msg += '───────────────────────────'
 
     send_ntfy_notification(
-        title=f'🛡️ Profit Locked (+${locked_profit:.2f} USDT): {symbol}',
+        title=f'🛡️ New SL Set (${new_sl:.5f}): {symbol}',
         message_body=msg,
         tags=['shield', 'moneybag'],
         topic=EVENT_ALERT_TOPIC,
     )
 
   return new_sl
+
 
 
 
@@ -250,37 +256,70 @@ def send_ntfy_notification(
 
 
 def send_trade_event_notification(
-    trade_id, symbol, direction, close_reason, margin, exit_amount, net_pnl
+    trade_id,
+    symbol,
+    direction,
+    close_reason,
+    margin,
+    exit_amount,
+    net_pnl,
+    entry_p=0.0,
+    exit_p=0.0,
+    pos_val=0.0,
 ):
-  """Trade hit (SL, TP, 24H) hone par short responsive breakdown notification bhejta hai."""
+  """Trade hit (SL, TP, 24H) hone par detailed & professional breakdown notification bhejta hai."""
   pnl_icon = '🟢' if net_pnl >= 0 else '🔻'
   pnl_sign = '+' if net_pnl >= 0 else ''
 
-  reason_text_map = {
+  # Calculate ROI Percentage based on margin used
+  roi_pct = (net_pnl / margin * 100) if margin > 0 else 0.0
+
+  # Reason mapping for clean display titles
+  reason_map = {
       'CLOSED_SL': '🚫 STOP LOSS HIT',
       'CLOSED_TP1': '🎯 TAKE PROFIT 1 HIT',
-      'CLOSED_TP2': '🎯 TAKE PROFIT 2 HIT',
-      'CLOSED_24H_PROFIT': '⏳ 24H TIME PROFIT HIT',
+      'CLOSED_TP2': '🚀 TAKE PROFIT 2 HIT',
+      'CLOSED_24H_PROFIT': '⏳ 24H TIME EXPIRY (PROFIT)',
   }
-  formatted_reason = reason_text_map.get(close_reason, close_reason)
+  formatted_reason = reason_map.get(close_reason, close_reason)
 
-  msg = f'🚨 TRADE CLOSED BREAKDOWN #{trade_id}\n'
-  msg += '───────────────────────────\n'
+  # Calculate estimated round-trip fee (~0.15% of position value)
+  total_fee_usdt = pos_val * (BINANCE_FEE_RATE * 2) if pos_val > 0 else 0.0
+
+  # Constructing professional structured notification message
+  msg = f'⚡ TRADE CLOSED BREAKDOWN #{trade_id}\n'
+  msg += '═══════════════════════════\n'
   msg += f'📌 Symbol       : {symbol} [{direction}]\n'
   msg += f'📝 Close Reason : {formatted_reason}\n'
-  msg += f'💰 Start Margin : ${margin:.2f} USDT\n'
-  msg += f'🚪 Exit Amount  : ${exit_amount:.2f} USDT\n'
-  msg += f'📊 Net PnL      : {pnl_icon} {pnl_sign}${net_pnl:.2f} USDT\n'
-  msg += '───────────────────────────'
+  msg += '───────────────────────────\n'
 
-  title = f'🔔 Trade Closed: {symbol} ({formatted_reason})'
-  tags = ['warning', 'checkered_flag'] if net_pnl < 0 else ['rocket', 'moneybag']
+  if entry_p > 0 and exit_p > 0:
+    msg += f'📍 Entry Price : ${entry_p:.5f}\n'
+    msg += f'🚪 Exit Price  : ${exit_p:.5f}\n'
+    msg += '───────────────────────────\n'
+
+  msg += f'💰 Start Margin : ${margin:.2f} USDT\n'
+  msg += f'🏦 Payout Value : ${exit_amount:.2f} USDT\n'
+  if total_fee_usdt > 0:
+    msg += f'🧾 Est. Fees   : -${total_fee_usdt:.3f} USDT\n'
+
+  msg += '───────────────────────────\n'
+  msg += (
+      f'📊 Net PnL      : {pnl_icon} {pnl_sign}${net_pnl:.2f} USDT'
+      f' ({pnl_sign}{roi_pct:.2f}% ROI)\n'
+  )
+  msg += '═══════════════════════════\n'
+  msg += f'🕒 Closed At    : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
+
+  title = f'{pnl_icon} Trade Closed: {symbol} ({pnl_sign}${net_pnl:.2f} USDT)'
+  tags = (
+      ['warning', 'checkered_flag']
+      if net_pnl < 0
+      else ['rocket', 'moneybag', 'trophy']
+  )
 
   send_ntfy_notification(
-      title=title,
-      message_body=msg,
-      tags=tags,
-      topic=EVENT_ALERT_TOPIC,  # Use 'events_hit_hdhdhe' topic
+      title=title, message_body=msg, tags=tags, topic=EVENT_ALERT_TOPIC
   )
 
 
@@ -451,6 +490,7 @@ def process_active_trades():
 
     status = 'ACTIVE'
     gross_pnl = 0.0
+    exit_p = 0.0
 
     trade_dict = {
         'id': t_id,
@@ -479,27 +519,33 @@ def process_active_trades():
         if c_close >= c_open:
           if c_low <= sl_p:
             status = 'CLOSED_SL'
+            exit_p = sl_p
             gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
             break
           elif c_high >= tp2_p:
             status = 'CLOSED_TP2'
+            exit_p = tp2_p
             gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
             break
           elif c_high >= tp1_p:
             status = 'CLOSED_TP1'
+            exit_p = tp1_p
             gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
             break
         else:
           if c_high >= tp2_p:
             status = 'CLOSED_TP2'
+            exit_p = tp2_p
             gross_pnl = pos_val * ((tp2_p - entry_p) / entry_p)
             break
           elif c_high >= tp1_p:
             status = 'CLOSED_TP1'
+            exit_p = tp1_p
             gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
             break
           elif c_low <= sl_p:
             status = 'CLOSED_SL'
+            exit_p = sl_p
             gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
             break
 
@@ -513,6 +559,7 @@ def process_active_trades():
 
           if net_pct > 0.5:
             status = 'CLOSED_24H_PROFIT'
+            exit_p = c_close
             gross_pnl = candle_gross_pnl
             break
 
@@ -520,27 +567,33 @@ def process_active_trades():
         if c_close <= c_open:
           if c_high >= sl_p:
             status = 'CLOSED_SL'
+            exit_p = sl_p
             gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
             break
           elif c_low <= tp2_p:
             status = 'CLOSED_TP2'
+            exit_p = tp2_p
             gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
             break
           elif c_low <= tp1_p:
             status = 'CLOSED_TP1'
+            exit_p = tp1_p
             gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
             break
         else:
           if c_low <= tp2_p:
             status = 'CLOSED_TP2'
+            exit_p = tp2_p
             gross_pnl = pos_val * ((entry_p - tp2_p) / entry_p)
             break
           elif c_low <= tp1_p:
             status = 'CLOSED_TP1'
+            exit_p = tp1_p
             gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
             break
           elif c_high >= sl_p:
             status = 'CLOSED_SL'
+            exit_p = sl_p
             gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
             break
 
@@ -554,6 +607,7 @@ def process_active_trades():
 
           if net_pct > 0.5:
             status = 'CLOSED_24H_PROFIT'
+            exit_p = c_close
             gross_pnl = candle_gross_pnl
             break
 
@@ -588,7 +642,7 @@ def process_active_trades():
           f' PnL: ${net_pnl:+.2f}'
       )
 
-      # Send Event Breakdown Notification to topic 'events_hit_hdhdhe'
+      # Send Event Breakdown Notification to topic 'events_hit_hdhdhe' with full details
       send_trade_event_notification(
           trade_id=t_id,
           symbol=symbol,
@@ -597,9 +651,13 @@ def process_active_trades():
           margin=margin,
           exit_amount=exit_amount,
           net_pnl=net_pnl,
+          entry_p=entry_p,
+          exit_p=exit_p,
+          pos_val=pos_val,
       )
 
   conn.close()
+
 
 
 
