@@ -505,7 +505,7 @@ def check_micro_momentum(df, direction):
 # =========================================================
 def process_trade_logic(symbol_input, base_risk_pct=1.5):
     """
-    Main Trader Engine execution logic with Dynamic Key-Level RRR (Min 1:1.5) & Strict 1% Total Risk Guard.
+    Main Trader Engine execution logic with Dynamic Key-Level RRR (Min 1:0.8) & Strict 1% Total Risk Guard.
     """
     port = load_portfolio()
     active_count = get_active_trades_count()
@@ -514,12 +514,12 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"   🏛️ MASTER TRADER ENGINE v4.5 | Processing: [{symbol_input}]")
     print("=" * 70)
     print(f"💼 PORTFOLIO: Total: ${port['total']:.2f} | Available: ${port['available']:.2f} | Frozen: ${port['frozen']:.2f}")
-    print(f"📊 ACTIVE TRADES IN DB: {active_count}/3")
+    print(f"📊 ACTIVE TRADES IN DB: {active_count}/5")
     print("=" * 70)
 
     # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
     if active_count >= 5:
-        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 3 Active Trades limit reached ({active_count}/3)."
+        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 5 Active Trades limit reached ({active_count}/5)."
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
         return False
@@ -664,7 +664,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
         if not (micro_15m or micro_5m):
             # 💡 High Quant Score Bypass Guard
-            if (direction == "LONG" and score >= 60) or (direction == "SHORT" and score <= 40):
+            if (direction == "LONG" and score >= 70) or (direction == "SHORT" and score <= 30):
                 print(f"⚡ High Score ({score}): Overriding Micro-Delay for Instant Execution!")
             else:
                 trade_possible = False
@@ -705,26 +705,29 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
         risk_dist = live_price - sl_price
         
-        tp1_price = resistance_4h
-        reward_dist = tp1_price - live_price
+        # ATR-based quick scalp target (Hard Resistance ki bajaye 1.0x ATR)
+        tp1_price = live_price + (atr_val * 1.0)
+        tp2_price = resistance_4h
         
+        reward_dist = tp1_price - live_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
-        tp2_price = live_price + (risk_dist * max(2.5, calculated_rrr * 1.3))
         breakeven_lock_level = tp1_price
 
     elif direction == "SHORT":
         sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
         risk_dist = sl_price - live_price
         
-        tp1_price = support_4h
-        reward_dist = live_price - tp1_price
+        # ATR-based quick scalp target (Hard Support ki bajaye 1.0x ATR)
+        tp1_price = live_price - (atr_val * 1.0)
+        tp2_price = support_4h
         
+        reward_dist = live_price - tp1_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
-        tp2_price = live_price - (risk_dist * max(2.5, calculated_rrr * 1.3))
         breakeven_lock_level = tp1_price
 
-    # 🛑 STRICT FILTER 1: Minimum 1:1.5 Risk-to-Reward Ratio Guard
-    MIN_REQUIRED_RRR = 1.5
+
+    # 🛑 STRICT FILTER 1: Minimum Risk-to-Reward Ratio Guard
+    MIN_REQUIRED_RRR = 0.8
     if calculated_rrr < MIN_REQUIRED_RRR:
         msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
         print(f"\n{msg}\n")
@@ -757,7 +760,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("╠" + "═" * 68 + "╣")
     print(f"║ 📍 ENTRY POINT         : ${live_price:<15.4f}                        ║")
     print(f"║ 🛑 STOP LOSS (SL)      : ${sl_price:<15.4f} (-{sl_dist_pct:.2f}%)               ║")
-    print(f"║ 📊 CALCULATED RRR      : 1:{calculated_rrr:<13.2f} (Min Required 1:1.5)║")
+    print(f"║ 📊 CALCULATED RRR      : 1:{calculated_rrr:<13.2f} (Min Required 1:{MIN_REQUIRED_RRR})║")
     print(f"║ 🔄 BREAKEVEN SL TRIGGER: ${breakeven_lock_level:<15.4f} (Locked at TP1 Hit)  ║")
     print(f"║ 🎯 TARGET 1 (TP1)      : ${tp1_price:<15.4f} (Key Level Target)     ║")
     print(f"║ 🚀 TARGET 2 (TP2)      : ${tp2_price:<15.4f} (Extended Target)      ║")
@@ -770,24 +773,21 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("╚" + "═" * 68 + "╝")
 
     # PUSHBULLET NOTIFICATION FOR EXECUTED TRADE
-    trade_title = f"🚀 [TRADE EXECUTED] {symbol_input} ({direction})"
-    trade_body = f"🪙 Pair: {symbol_input} | Side: {direction}\n"
-    trade_body += f"📊 Quant Score: {score}/100 | Max Available RRR: 1:{calculated_rrr:.2f}\n"
-    trade_body += "----------------------------------------\n"
-    trade_body += f"📍 Entry Price: ${live_price:.4f}\n"
-    trade_body += f"🛑 Stop Loss: ${sl_price:.4f} (-{sl_dist_pct:.2f}%)\n"
-    trade_body += f"🎯 Target 1 (TP1): ${tp1_price:.4f} (Key Level Target)\n"
-    trade_body += f"🚀 Target 2 (TP2): ${tp2_price:.4f} (Extended Target)\n"
-    trade_body += f"🔄 Breakeven SL: ${breakeven_lock_level:.4f}\n"
-    trade_body += "----------------------------------------\n"
-    trade_body += f"💼 Total Portfolio: ${port['total']:.2f} USDT\n"
-    trade_body += f"💵 Available Cap Before: ${port['available']:.2f} USDT\n"
-    trade_body += f"🔒 Margin Frozen: ${required_margin:.2f} USDT\n"
-    trade_body += f"⚡ Leverage: {leverage}x | Volatility: {volatility_state}\n"
-    trade_body += f"📈 Total Position Value: ${pos_value:.2f} USDT\n"
-    trade_body += f"🪙 Coin Quantity: {coin_qty:.4f}\n"
-    trade_body += f"🛡️ Max Risk Amount: ${dollar_risk:.2f} USDT (Strict 1% Capital)\n"
-    trade_body += f"📊 Active Trades Count: {active_count + 1}/3\n"
+    direction_emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    trade_title = f"{direction_emoji} | {symbol_input} | {leverage}x"
+    
+    trade_body = f"📊 SIGNAL: {direction} {symbol_input}\n"
+    trade_body += f"⚡ Leverage: Cross {leverage}x\n"
+    trade_body += f"------------------------------------\n"
+    trade_body += f"📍 ENTRY : ${live_price:.4f}\n"
+    trade_body += f"🎯 TP 1  : ${tp1_price:.4f} (Scalp)\n"
+    trade_body += f"🚀 TP 2  : ${tp2_price:.4f} (Runner)\n"
+    trade_body += f"🛑 STOP  : ${sl_price:.4f} (-{sl_dist_pct:.2f}%)\n"
+    trade_body += f"------------------------------------\n"
+    trade_body += f"💼 Margin Needed : ${required_margin:.2f} USDT\n"
+    trade_body += f"🛡️ Max Risk Size : ${dollar_risk:.2f} USDT (1% Capital)\n"
+    trade_body += f"📊 Score: {score}/100 | RRR: 1:{calculated_rrr:.2f}\n"
+    trade_body += f"📈 Active Trades : {active_count + 1}/5"
 
     send_pushbullet_notification(trade_title, trade_body)
 
@@ -798,6 +798,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
+
 
 
 
