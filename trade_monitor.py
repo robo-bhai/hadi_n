@@ -128,10 +128,10 @@ def update_sl_in_db(trade_id, new_sl):
 # 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
 # =========================================================
 def check_trailing_and_breakeven(trade, current_price):
-  entry = trade['entry_price']
-  sl = trade['sl_price']
-  direction = trade['direction'].upper()
-  t_id = trade['id']
+  entry = trade.get('entry_price', 0.0)
+  sl = trade.get('sl_price', 0.0)
+  direction = str(trade.get('direction', '')).upper()
+  t_id = trade.get('id')
   symbol = trade.get('symbol', '')
   pos_val = trade.get('pos_value', 0.0)
 
@@ -139,74 +139,64 @@ def check_trailing_and_breakeven(trade, current_price):
     return sl
 
   total_fee_usdt = pos_val * (BINANCE_FEE_RATE * 2)
-  updated = False
-  new_sl = sl
+  is_long = direction in ['LONG', 'BUY']
+  is_short = direction in ['SHORT', 'SELL']
+
+  if not (is_long or is_short):
+    return sl
+
+  # Calculate Current PnL in USDT
+  current_pnl_usdt = (
+      pos_val * ((current_price - entry) / entry)
+      if is_long
+      else pos_val * ((entry - current_price) / entry)
+  )
+
+  # Define Profit Tiers: (Threshold, Net Profit Target, Locked Profit Label)
+  if is_long:
+    tiers = [(1.00, 0.50, 0.60), (0.60, 0.35, 0.40), (0.40, 0.10, 0.05)]
+  else:
+    tiers = [(1.00, 0.50, 0.50), (0.45, 0.05, 0.05), (0.30, 0.15, 0.15)]
+
+  target_sl = sl
   locked_profit = 0.0
 
-  if direction in ['LONG', 'BUY']:
-    current_pnl_usdt = pos_val * ((current_price - entry) / entry)
-
-    if current_pnl_usdt >= 1.00:
-      target_gross = 0.50 + total_fee_usdt
-      target_sl = entry * (1 + (target_gross / pos_val))
-      locked_profit = 0.50
-    elif current_pnl_usdt >= 0.30:
-      target_gross = 0.15 + total_fee_usdt
-      target_sl = entry * (1 + (target_gross / pos_val))
-      locked_profit = 0.15
-    elif current_pnl_usdt >= 0.15:
-      target_gross = 0.05 + total_fee_usdt
-      target_sl = entry * (1 + (target_gross / pos_val))
-      locked_profit = 0.05
-    else:
-      target_sl = sl
-
-    if target_sl > sl:
-      new_sl = target_sl
-      update_sl_in_db(t_id, new_sl)
-      trade['sl_price'] = new_sl
-      updated = True
-      print(
-          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT)'
+  # Evaluate Tiers
+  for threshold, net_target, lock_label in tiers:
+    if current_pnl_usdt >= threshold:
+      target_gross = net_target + total_fee_usdt
+      target_sl = (
+          entry * (1 + (target_gross / pos_val))
+          if is_long
+          else entry * (1 - (target_gross / pos_val))
       )
+      locked_profit = lock_label
+      break
 
-  elif direction in ['SHORT', 'SELL']:
-    current_pnl_usdt = pos_val * ((entry - current_price) / entry)
+  # Check if SL needs updating
+  is_sl_improved = (is_long and target_sl > sl) or (
+      is_short and (sl == 0 or target_sl < sl)
+  )
 
-    if current_pnl_usdt >= 1.00:
-      target_gross = 0.50 + total_fee_usdt
-      target_sl = entry * (1 - (target_gross / pos_val))
-      locked_profit = 0.50
-    elif current_pnl_usdt >= 0.30:
-      target_gross = 0.15 + total_fee_usdt
-      target_sl = entry * (1 - (target_gross / pos_val))
-      locked_profit = 0.15
-    elif current_pnl_usdt >= 0.15:
-      target_gross = 0.05 + total_fee_usdt
-      target_sl = entry * (1 - (target_gross / pos_val))
-      locked_profit = 0.05
-    else:
-      target_sl = sl
+  if is_sl_improved:
+    new_sl = target_sl
+    update_sl_in_db(t_id, new_sl)
+    trade['sl_price'] = new_sl
 
-    if sl == 0 or target_sl < sl:
-      new_sl = target_sl
-      update_sl_in_db(t_id, new_sl)
-      trade['sl_price'] = new_sl
-      updated = True
-      print(
-          f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-          f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT)'
-      )
+    print(
+        f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
+        f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT)'
+    )
 
-  if updated:
-    msg = f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} NET) FOR TRADE #{t_id}\n'
-    msg += '───────────────────────────\n'
-    msg += f'📌 Symbol       : {symbol} [{direction}]\n'
-    msg += f'📍 Entry Price : ${entry:.5f}\n'
-    msg += f'🎯 New SL Price: ${new_sl:.5f}\n'
-    msg += f'💵 Peak PnL     : +${current_pnl_usdt:.2f} USDT\n'
-    msg += '───────────────────────────'
+    msg = (
+        f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} NET) FOR TRADE #{t_id}\n'
+        '───────────────────────────\n'
+        f'📌 Symbol       : {symbol} [{direction}]\n'
+        f'📍 Entry Price : ${entry:.5f}\n'
+        f'🎯 New SL Price: ${new_sl:.5f}\n'
+        f'💵 Peak PnL     : +${current_pnl_usdt:.2f} USDT\n'
+        '───────────────────────────'
+    )
 
     send_ntfy_notification(
         title=f'🛡️ New SL Set (${new_sl:.5f}): {symbol}',
@@ -214,8 +204,10 @@ def check_trailing_and_breakeven(trade, current_price):
         tags=['shield', 'moneybag'],
         topic=EVENT_ALERT_TOPIC,
     )
+    return new_sl
 
-  return new_sl
+  return sl
+
 
 
 # =========================================================
