@@ -188,11 +188,12 @@ def update_sl_in_db(trade_id, new_sl):
 # 🛡️ DYNAMIC USDT-BASED MULTI-LEVEL TRAILING ENGINE
 # =========================================================
 def check_trailing_and_breakeven(trade, current_price):
-  """Multi-Level USDT Lock Logic:
+  """Dynamic Multi-Level USDT Lock Logic (Optimized):
 
-  1. Profit >= +0.15 USDT -> SL locked at +0.05 USDT
-  2. Profit >= +0.30 USDT -> SL locked at +0.15 USDT
-  3. Profit >= +1.00 USDT -> SL locked at +0.50 USDT
+  1. Profit >= +0.10 USDT -> Break-Even (Entry Price + Fees Buffer)
+  2. Profit >= +0.25 USDT -> SL locked at +0.10 USDT
+  3. Profit >= +0.50 USDT -> SL locked at +0.25 USDT
+  4. Profit >= +1.00 USDT -> SL locked at +0.60 USDT
   """
   entry = trade['entry_price']
   sl = trade['sl_price']
@@ -212,17 +213,22 @@ def check_trailing_and_breakeven(trade, current_price):
     current_pnl_usdt = pos_val * ((current_price - entry) / entry)
 
     if current_pnl_usdt >= 1.00:
-      target_sl = entry * (1 + (0.50 / pos_val))
-      locked_profit = 0.50
-    elif current_pnl_usdt >= 0.30:
-      target_sl = entry * (1 + (0.15 / pos_val))
-      locked_profit = 0.15
-    elif current_pnl_usdt >= 0.15:
-      target_sl = entry * (1 + (0.05 / pos_val))
-      locked_profit = 0.05
+      target_sl = entry * (1 + (0.60 / pos_val))
+      locked_profit = 0.60
+    elif current_pnl_usdt >= 0.50:
+      target_sl = entry * (1 + (0.25 / pos_val))
+      locked_profit = 0.25
+    elif current_pnl_usdt >= 0.25:
+      target_sl = entry * (1 + (0.10 / pos_val))
+      locked_profit = 0.10
+    elif current_pnl_usdt >= 0.10:
+      # Break-Even + 0.08% buffer to cover Binance maker/taker fees
+      target_sl = entry * 1.0008
+      locked_profit = 0.01
     else:
       target_sl = sl
 
+    # SL ko sirf UPWARD move karne ki permission hai
     if target_sl > sl:
       new_sl = target_sl
       update_sl_in_db(t_id, new_sl)
@@ -237,17 +243,22 @@ def check_trailing_and_breakeven(trade, current_price):
     current_pnl_usdt = pos_val * ((entry - current_price) / entry)
 
     if current_pnl_usdt >= 1.00:
-      target_sl = entry * (1 - (0.50 / pos_val))
-      locked_profit = 0.50
-    elif current_pnl_usdt >= 0.30:
-      target_sl = entry * (1 - (0.15 / pos_val))
-      locked_profit = 0.15
-    elif current_pnl_usdt >= 0.15:
-      target_sl = entry * (1 - (0.05 / pos_val))
-      locked_profit = 0.05
+      target_sl = entry * (1 - (0.60 / pos_val))
+      locked_profit = 0.60
+    elif current_pnl_usdt >= 0.50:
+      target_sl = entry * (1 - (0.25 / pos_val))
+      locked_profit = 0.25
+    elif current_pnl_usdt >= 0.25:
+      target_sl = entry * (1 - (0.10 / pos_val))
+      locked_profit = 0.10
+    elif current_pnl_usdt >= 0.10:
+      # Break-Even - 0.08% buffer to cover Binance maker/taker fees
+      target_sl = entry * 0.9992
+      locked_profit = 0.01
     else:
       target_sl = sl
 
+    # Short position mein SL ko sirf DOWNWARD move karne ki permission hai
     if sl == 0 or target_sl < sl:
       new_sl = target_sl
       update_sl_in_db(t_id, new_sl)
@@ -275,6 +286,7 @@ def check_trailing_and_breakeven(trade, current_price):
     )
 
   return new_sl
+
 
 
 # =========================================================
