@@ -643,7 +643,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"📊 ACTIVE TRADES IN DB: {active_count}/5")
     print("=" * 70)
     # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
-    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=2)
+    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=5)
     if is_halted:
         msg = f"🛑 EMERGENCY STOP: {halt_reason}"
         print(f"\n{msg}\n")
