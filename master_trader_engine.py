@@ -493,6 +493,72 @@ def fetch_open_interest(symbol):
         pass
     return 0.0
 
+from datetime import datetime, timedelta
+
+def check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=2):
+    """
+    Checks if Daily Drawdown Limit (1.5% Equity) or Max SL Count (2 SLs) hit in last 24h.
+    Returns: (is_halted, reason_msg)
+    """
+    port = load_portfolio()
+    total_capital = port['total']
+    max_allowed_daily_loss = total_capital * (max_daily_loss_pct / 100.0)
+
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "MYSQL" else "?"
+
+    # Get all closed trades from the last 24 hours
+    if db_type == "MYSQL":
+        query = f"""
+            SELECT status, exit_reason, pnl, updated_at 
+            FROM trades 
+            WHERE status != {ph} AND updated_at >= NOW() - INTERVAL 24 HOUR
+            ORDER BY updated_at DESC
+        """
+    else:  # SQLite Fallback
+        query = f"""
+            SELECT status, exit_reason, pnl, updated_at 
+            FROM trades 
+            WHERE status != {ph} AND updated_at >= datetime('now', '-1 day')
+            ORDER BY updated_at DESC
+        """
+
+    cursor.execute(query, ('ACTIVE',))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return False, ""
+
+    sl_count = 0
+    total_daily_loss = 0.0
+
+    for row in rows:
+        status = str(row[0] or "").upper()
+        exit_reason = str(row[1] or "").upper()
+        pnl = float(row[2] or 0.0)
+
+        # 1. SL Count Logic
+        if "SL" in status or "SL" in exit_reason or "STOP" in status:
+            sl_count += 1
+
+        # 2. Daily Loss Tracking
+        if pnl < 0:
+            total_daily_loss += abs(pnl)
+
+    # 🛑 GUARD 1: Max SL Hit Guard (2 SLs Limit)
+    if sl_count >= max_sl_count:
+        return True, f"Daily Circuit Breaker! {sl_count} Stop-Losses hit in last 24h. Bot HALTED for today."
+
+    # 🛑 GUARD 2: Max Daily Drawdown Guard (1.5% Capital Loss)
+    if total_daily_loss >= max_allowed_daily_loss:
+        return True, f"Daily Risk Limit Hit! Realized Loss: ${total_daily_loss:.2f} (>= 1.5% of ${total_capital:.2f}). Bot HALTED for today."
+
+    return False, ""
+
+
+
 # ------------------------------------------------------------------------------
 # 3. PORTFOLIO & MACRO EXPOSURE ENGINE
 # ------------------------------------------------------------------------------
@@ -576,6 +642,13 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"💼 PORTFOLIO: Total: ${port['total']:.2f} | Available: ${port['available']:.2f} | Frozen: ${port['frozen']:.2f}")
     print(f"📊 ACTIVE TRADES IN DB: {active_count}/5")
     print("=" * 70)
+    # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
+    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=2)
+    if is_halted:
+        msg = f"🛑 EMERGENCY STOP: {halt_reason}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🛑 [DAILY CIRCUIT BREAKER] {symbol_input}", msg)
+        return False
 
     # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
     if active_count >= 6:
