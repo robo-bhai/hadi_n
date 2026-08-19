@@ -23,13 +23,11 @@ BINANCE_BOOK_TICKER_URL = (
 BINANCE_FUTURES_FUNDING_URL = 'https://fapi.binance.com/fapi/v1/premiumIndex'
 
 BINANCE_FEE_RATE = 0.00075
-
-# Trade Closing & Break-Even Alerts Target Topic
 EVENT_ALERT_TOPIC = 'events_hit_hdhdhe'
 
 
 # =========================================================
-# 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR
+# 🔌 RESPONSIVE MULTI-ENGINE DATABASE CONNECTOR & MIGRATION
 # =========================================================
 def get_db_connection():
   db_host = os.environ.get(
@@ -78,11 +76,42 @@ def get_db_connection():
   return conn, 'SQLITE'
 
 
+def auto_migrate_db():
+  """Checks and automatically creates 'last_checked_ms' column if missing."""
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
+
+  try:
+    if db_type == 'MYSQL':
+      cursor.execute("""
+                SELECT COUNT(*) 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = DATABASE() 
+                  AND TABLE_NAME = 'trades' 
+                  AND COLUMN_NAME = 'last_checked_ms'
+            """)
+      column_exists = cursor.fetchone()[0] > 0
+    else:
+      cursor.execute('PRAGMA table_info(trades)')
+      columns = [row[1] for row in cursor.fetchall()]
+      column_exists = 'last_checked_ms' in columns
+
+    if not column_exists:
+      print("🛠️ Column 'last_checked_ms' missing. Adding automatically...")
+      col_type = 'BIGINT DEFAULT 0' if db_type == 'MYSQL' else 'INTEGER DEFAULT 0'
+      cursor.execute(f'ALTER TABLE trades ADD COLUMN last_checked_ms {col_type}')
+      conn.commit()
+      print("✅ Column 'last_checked_ms' created successfully.")
+  except Exception as e:
+    print(f'⚠️ Migration check error: {e}')
+  finally:
+    conn.close()
+
+
 # =========================================================
 # 💾 DATABASE HELPER FUNCTIONS
 # =========================================================
 def update_sl_in_db(trade_id, new_sl):
-  """Updates Stop-Loss price in the MySQL / SQLite database."""
   conn, db_type = get_db_connection()
   cursor = conn.cursor()
   ph = '%s' if db_type == 'MYSQL' else '?'
@@ -96,21 +125,9 @@ def update_sl_in_db(trade_id, new_sl):
 
 
 # =========================================================
-# 🛡️ TRAILING & BREAK-EVEN MONITORING ENGINE
-# =========================================================
-# =========================================================
-# 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
-# =========================================================
-# =========================================================
 # 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
 # =========================================================
 def check_trailing_and_breakeven(trade, current_price):
-  """Multi-Level USDT Lock Logic (Net Profit After Fees):
-
-  1. Profit >= +0.15 USDT -> SL locked to cover Fees + Net +0.05 USDT
-  2. Profit >= +0.30 USDT -> SL locked at Net +0.15 USDT
-  3. Profit >= +1.00 USDT -> SL locked at Net +0.50 USDT
-  """
   entry = trade['entry_price']
   sl = trade['sl_price']
   direction = trade['direction'].upper()
@@ -121,9 +138,7 @@ def check_trailing_and_breakeven(trade, current_price):
   if pos_val <= 0 or entry <= 0:
     return sl
 
-  # Calculate Total Round-Trip Fee in USDT (~0.15% of position value)
   total_fee_usdt = pos_val * (BINANCE_FEE_RATE * 2)
-
   updated = False
   new_sl = sl
   locked_profit = 0.0
@@ -132,15 +147,15 @@ def check_trailing_and_breakeven(trade, current_price):
     current_pnl_usdt = pos_val * ((current_price - entry) / entry)
 
     if current_pnl_usdt >= 1.00:
-      target_gross = 0.50 + total_fee_usdt  # Covers fees + locks $0.50 Net
+      target_gross = 0.50 + total_fee_usdt
       target_sl = entry * (1 + (target_gross / pos_val))
       locked_profit = 0.50
     elif current_pnl_usdt >= 0.30:
-      target_gross = 0.15 + total_fee_usdt  # Covers fees + locks $0.15 Net
+      target_gross = 0.15 + total_fee_usdt
       target_sl = entry * (1 + (target_gross / pos_val))
       locked_profit = 0.15
     elif current_pnl_usdt >= 0.15:
-      target_gross = 0.05 + total_fee_usdt  # Covers fees + locks $0.05 Net
+      target_gross = 0.05 + total_fee_usdt
       target_sl = entry * (1 + (target_gross / pos_val))
       locked_profit = 0.05
     else:
@@ -203,23 +218,12 @@ def check_trailing_and_breakeven(trade, current_price):
   return new_sl
 
 
-
-
-
-
 # =========================================================
 # 📲 NTFY NOTIFICATION ENGINE
 # =========================================================
 def get_ntfy_topic():
-  """Environment variables (GitHub Secrets) se LIVE_MON_TOP topic fetch karta hai."""
   topic = os.getenv('LIVE_MON_TOP', '').strip()
-  if not topic:
-    print(
-        '⚠️ LIVE_MON_TOP topic secret set nahi hai. Default fallback topic use'
-        ' hoga.'
-    )
-    return 'my_trading_monitor_channel_88'
-  return topic
+  return topic if topic else 'my_trading_monitor_channel_88'
 
 
 def send_ntfy_notification(
@@ -228,11 +232,9 @@ def send_ntfy_notification(
     tags=['chart_with_upwards_trend', 'moneybag'],
     topic=None,
 ):
-  """Ntfy server ko clean Markdown/Text format mein notification bhejta hai."""
   target_topic = topic if topic else get_ntfy_topic()
   ntfy_url = f'https://ntfy.sh/{target_topic}'
 
-  # Clean Unicode emojis from Title Header
   clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
   if not clean_title:
     clean_title = 'LIVE PORTFOLIO REPORT'
@@ -248,9 +250,7 @@ def send_ntfy_notification(
         ntfy_url, data=message_body.encode('utf-8'), headers=headers, timeout=10
     )
     if res.status_code == 200:
-      print(f'🚀 Ntfy notification successfully sent to topic: {target_topic}')
-    else:
-      print(f'❌ Ntfy push failed [{res.status_code}]: {res.text}')
+      print(f'🚀 Ntfy notification sent to topic: {target_topic}')
   except Exception as e:
     print(f'❌ Ntfy Request Exception: {e}')
 
@@ -267,14 +267,10 @@ def send_trade_event_notification(
     exit_p=0.0,
     pos_val=0.0,
 ):
-  """Trade hit (SL, TP, 24H) hone par detailed & professional breakdown notification bhejta hai."""
   pnl_icon = '🟢' if net_pnl >= 0 else '🔻'
   pnl_sign = '+' if net_pnl >= 0 else ''
-
-  # Calculate ROI Percentage based on margin used
   roi_pct = (net_pnl / margin * 100) if margin > 0 else 0.0
 
-  # Reason mapping for clean display titles
   reason_map = {
       'CLOSED_SL': '🚫 STOP LOSS HIT',
       'CLOSED_TP1': '🎯 TAKE PROFIT 1 HIT',
@@ -282,11 +278,8 @@ def send_trade_event_notification(
       'CLOSED_24H_PROFIT': '⏳ 24H TIME EXPIRY (PROFIT)',
   }
   formatted_reason = reason_map.get(close_reason, close_reason)
-
-  # Calculate estimated round-trip fee (~0.15% of position value)
   total_fee_usdt = pos_val * (BINANCE_FEE_RATE * 2) if pos_val > 0 else 0.0
 
-  # Constructing professional structured notification message
   msg = f'⚡ TRADE CLOSED BREAKDOWN #{trade_id}\n'
   msg += '═══════════════════════════\n'
   msg += f'📌 Symbol       : {symbol} [{direction}]\n'
@@ -324,7 +317,7 @@ def send_trade_event_notification(
 
 
 # =========================================================
-# 📊 ACCURATE BINANCE VISION LIVE PRICE FETCH
+# 📊 BINANCE LIVE PRICE FETCH
 # =========================================================
 def fetch_live_price(symbol):
   if not symbol:
@@ -345,8 +338,8 @@ def fetch_live_price(symbol):
         return bid
       elif ask > 0:
         return ask
-  except Exception as e:
-    print(f'⚠️ Book Ticker fetch failed for {clean_symbol}: {e}')
+  except Exception:
+    pass
 
   try:
     url = f'{BINANCE_FUTURES_FUNDING_URL}?symbol={clean_symbol}'
@@ -355,26 +348,25 @@ def fetch_live_price(symbol):
       val = float(res.json().get('markPrice', 0))
       if val > 0:
         return val
-  except Exception as e:
-    print(f'⚠️ Futures Funding fetch failed for {clean_symbol}: {e}')
+  except Exception:
+    pass
 
-  print(f'❌ ERROR: Live price not found for {clean_symbol}')
   return None
 
 
 # =========================================================
-# 🕯️ DOWNLOAD 1m CANDLES FROM TRADE START TIME TO NOW
+# 🕯️ INCREMENTAL KLINES DOWNLOADER (NEW OPTIMIZED LOGIC)
 # =========================================================
-def fetch_full_trade_klines(symbol, start_time_ms):
+def fetch_incremental_klines(symbol, start_time_ms):
+  """Fetches only NEW candles starting from start_time_ms to reduce API latency."""
   clean_symbol = str(symbol).strip().upper()
   all_candles = []
   current_start = start_time_ms
   now_ms = int(datetime.now().timestamp() * 1000)
 
+  # Fetch only required missing chunks
   while current_start < now_ms:
-    url = (
-        f'{BINANCE_SPOT_URL}?symbol={clean_symbol}&interval=1m&startTime={current_start}&limit=1000'
-    )
+    url = f'{BINANCE_SPOT_URL}?symbol={clean_symbol}&interval=1m&startTime={current_start}&limit=1000'
     try:
       res = requests.get(url, timeout=5)
       if res.status_code == 200:
@@ -420,14 +412,7 @@ def fetch_full_trade_klines(symbol, start_time_ms):
 
 
 # =========================================================
-# 🛡️ AUTO BREAK-EVEN (BE) ENGINE (NEW ADDITION)
-# =========================================================
-
-
-
-
-# =========================================================
-# 🔄 PROCESS ACTIVE TRADES
+# 🔄 PROCESS ACTIVE TRADES WITH DB TIMESTAMP TRACKING
 # =========================================================
 def process_active_trades():
   print('\n' + '=' * 60)
@@ -445,21 +430,21 @@ def process_active_trades():
   )
   port_row = cursor.fetchone()
   if not port_row:
-    print('⚠️ Portfolio record #1 not found. Aborting trade processing.')
+    print('⚠️ Portfolio record #1 not found. Aborting.')
     conn.close()
     return
   total_cap, avail_cap, frozen_margin = port_row
 
   cursor.execute(
       f'SELECT id, timestamp, symbol, direction, entry_price, sl_price,'
-      ' tp1_price, tp2_price, margin_frozen, pos_value FROM trades WHERE status'
-      f' = {ph}',
+      f' tp1_price, tp2_price, margin_frozen, pos_value, last_checked_ms FROM'
+      f' trades WHERE status = {ph}',
       ('ACTIVE',),
   )
   active_trades = cursor.fetchall()
 
   if not active_trades:
-    print('ℹ️ No active trades currently present in the database.')
+    print('ℹ️ No active trades currently present in database.')
 
   for trade in active_trades:
     (
@@ -473,6 +458,7 @@ def process_active_trades():
         tp2_p,
         margin,
         pos_val,
+        last_checked_ms,
     ) = trade
     print(f'\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]')
 
@@ -483,14 +469,20 @@ def process_active_trades():
       print(f'❌ Timestamp Parsing Error for Trade #{t_id}: {e}')
       continue
 
-    df = fetch_full_trade_klines(symbol, start_ms)
+    # Determine fetch point: Use last_checked_ms if present, otherwise trade start_ms
+    fetch_from_ms = (
+        last_checked_ms if (last_checked_ms and last_checked_ms > 0) else start_ms
+    )
+
+    df = fetch_incremental_klines(symbol, fetch_from_ms)
     if df is None or df.empty:
-      print(f'⚠️ No kline data retrieved for {symbol}. Skipping evaluation.')
+      print(f'⚠️ No new kline data retrieved for {symbol}.')
       continue
 
     status = 'ACTIVE'
     gross_pnl = 0.0
     exit_p = 0.0
+    latest_processed_ms = fetch_from_ms
 
     trade_dict = {
         'id': t_id,
@@ -502,7 +494,8 @@ def process_active_trades():
     }
 
     for idx, row in df.iterrows():
-      c_time_ms = row['time']
+      c_time_ms = int(row['time'])
+      latest_processed_ms = c_time_ms
       c_open, c_high, c_low, c_close = (
           row['open'],
           row['high'],
@@ -511,7 +504,6 @@ def process_active_trades():
       )
       time_elapsed_seconds = (c_time_ms - start_ms) / 1000.0
 
-      # 🛡️ Dynamic Break-Even Check (Candle High for LONG, Candle Low for SHORT)
       check_p = c_high if direction == 'LONG' else c_low
       sl_p = check_trailing_and_breakeven(trade_dict, check_p)
 
@@ -563,7 +555,7 @@ def process_active_trades():
             gross_pnl = candle_gross_pnl
             break
 
-      else:  # SHORT Direction
+      else:  # SHORT
         if c_close <= c_open:
           if c_high >= sl_p:
             status = 'CLOSED_SL'
@@ -611,7 +603,13 @@ def process_active_trades():
             gross_pnl = candle_gross_pnl
             break
 
-    # DB updates & Event Notification trigger if trade status changed
+    # Save last checked candle timestamp to DB
+    cursor.execute(
+        f'UPDATE trades SET last_checked_ms = {ph} WHERE id = {ph}',
+        (latest_processed_ms, t_id),
+    )
+    conn.commit()
+
     if status != 'ACTIVE':
       entry_fee = pos_val * BINANCE_FEE_RATE
       exit_value = max(0, pos_val + gross_pnl)
@@ -628,11 +626,8 @@ def process_active_trades():
       total_cap += net_pnl
 
       cursor.execute(
-          'UPDATE portfolio SET total_capital = %s, available_capital = %s,'
-          ' frozen_margin = %s WHERE id = 1'
-          if db_type == 'MYSQL'
-          else 'UPDATE portfolio SET total_capital = ?, available_capital = ?,'
-          ' frozen_margin = ? WHERE id = 1',
+          f'UPDATE portfolio SET total_capital = {ph}, available_capital ='
+          f' {ph}, frozen_margin = {ph} WHERE id = 1',
           (total_cap, avail_cap, frozen_margin),
       )
       conn.commit()
@@ -642,7 +637,6 @@ def process_active_trades():
           f' PnL: ${net_pnl:+.2f}'
       )
 
-      # Send Event Breakdown Notification to topic 'events_hit_hdhdhe' with full details
       send_trade_event_notification(
           trade_id=t_id,
           symbol=symbol,
@@ -659,19 +653,19 @@ def process_active_trades():
   conn.close()
 
 
-
-
-
 # =========================================================
-# 📋 GENERATE & SEND CLEAN NTFY NOTIFICATION REPORT
+# 📋 GENERATE & SEND REPORT
 # =========================================================
 def generate_and_send_report():
+  # Auto Check / Migration for missing column
+  auto_migrate_db()
+
+  # Process Trades
   process_active_trades()
 
   conn, db_type = get_db_connection()
   cursor = conn.cursor()
 
-  # 1. Fetch Base Portfolio State
   cursor.execute(
       'SELECT total_capital, available_capital, frozen_margin FROM portfolio'
       ' WHERE id = 1'
@@ -679,7 +673,6 @@ def generate_and_send_report():
   port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
   base_total_capital, avail_capital, frozen_margin = port_row
 
-  # 2. Fetch Active Trades & Calculate Live Floating PnL
   cursor.execute(
       'SELECT id, symbol, direction, entry_price, sl_price, tp1_price,'
       ' tp2_price, margin_frozen, pos_value, leverage, status FROM trades WHERE'
@@ -737,10 +730,8 @@ def generate_and_send_report():
         'float_pnl_pct': float_pnl_pct,
     })
 
-  # Total Balance including Live PnL
   live_total_balance = base_total_capital + total_floating_pnl
 
-  # 3. Fetch Closed Trades Metrics
   cursor.execute("SELECT status, pnl FROM trades WHERE status != 'ACTIVE'")
   closed_trades = cursor.fetchall()
 
@@ -751,9 +742,6 @@ def generate_and_send_report():
 
   conn.close()
 
-  # =========================================================
-  # 📱 BUILD CLEAN & RESPONSIVE NTFY FORMATTED MESSAGE
-  # =========================================================
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
   msg = '📊 PORTFOLIO BREAKDOWN\n'
@@ -793,7 +781,6 @@ def generate_and_send_report():
       )
       msg += '-------------------------------------------\n'
 
-  # Title & Triggering Send
   report_title = (
       '⚡ Live Portfolio Report'
       f' ({len(active_positions_details)} Active Trades)'
