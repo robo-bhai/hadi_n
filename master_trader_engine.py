@@ -239,6 +239,66 @@ init_db()
 # =========================================================
 # 📊 DATABASE QUERIES & PORTFOLIO STATE
 # =========================================================
+
+from datetime import datetime
+
+def check_dynamic_cooldown(symbol):
+    """
+    Checks if symbol is in dynamic cooldown based on last trade outcome.
+    - SL Hit / Loss: 24 Hours Cooldown
+    - TP Hit / Profit: 4 Hours Cooldown
+    """
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "MYSQL" else "?"
+
+    # Get the latest closed trade for this symbol
+    query = f"""
+        SELECT status, exit_reason, updated_at 
+        FROM trades 
+        WHERE symbol = {ph} AND status != {ph}
+        ORDER BY updated_at DESC LIMIT 1
+    """
+    cursor.execute(query, (symbol, 'ACTIVE'))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return False, ""
+
+    status = str(row[0] or "").upper()
+    exit_reason = str(row[1] or "").upper()
+    last_time = row[2]
+
+    # Handle string timestamp from SQLite fallback
+    if isinstance(last_time, str):
+        try:
+            last_time = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            last_time = datetime.strptime(last_time.split('.')[0], "%Y-%m-%d %H:%M:%S")
+
+    time_diff = datetime.now() - last_time
+    hours_passed = time_diff.total_seconds() / 3600.0
+
+    # 1. Stop Loss Cooldown (24 Hours)
+    if "SL" in status or "SL" in exit_reason or "STOP" in status or "LOSS" in exit_reason:
+        if hours_passed < 24.0:
+            remaining = 24.0 - hours_passed
+            return True, f"24H SL Cooldown Active! Last trade hit SL {hours_passed:.1f}h ago. Wait {remaining:.1f}h more."
+
+    # 2. Take Profit / Normal Close Cooldown (4 Hours)
+    else:
+        if hours_passed < 4.0:
+            remaining = 4.0 - hours_passed
+            return True, f"4H TP Cooldown Active! Last trade closed successfully {hours_passed:.1f}h ago. Wait {remaining:.1f}h more."
+
+    return False, ""
+
+
+
+
+
+
 def load_portfolio():
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
@@ -518,8 +578,8 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("=" * 70)
 
     # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
-    if active_count >= 5:
-        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 5 Active Trades limit reached ({active_count}/5)."
+    if active_count >= 6:
+        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 6 Active Trades limit reached ({active_count}/6)."
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
         return False
@@ -537,6 +597,15 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
         return False
+
+    # 🔴 EARLY GUARD 3.5: Dynamic Cooldown Check (SL = 24H | TP = 4H)
+    is_blocked, cooldown_msg = check_dynamic_cooldown(symbol_input)
+    if is_blocked:
+        msg = f"🚫 TRADE REJECTED: [{symbol_input}] - {cooldown_msg}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [DYNAMIC COOLDOWN] {symbol_input}", msg)
+        return False
+
 
     # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
     corr_risk, corr_msg = check_correlation_exposure(symbol_input)
