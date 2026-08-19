@@ -505,7 +505,7 @@ def check_micro_momentum(df, direction):
 # =========================================================
 def process_trade_logic(symbol_input, base_risk_pct=1.5):
     """
-    Main Trader Engine execution logic with Dynamic Key-Level RRR (Min 1:0.8) & Strict 1% Total Risk Guard.
+    Main Trader Engine execution logic with Scalp-Optimized Dynamic Key-Level RRR (Min 1:0.3) & Strict 1% Total Risk Guard.
     """
     port = load_portfolio()
     active_count = get_active_trades_count()
@@ -693,7 +693,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         send_pushbullet_notification(f"💤 [NO TRADE] {symbol_input} (Score: {score})", no_trade_body)
         return False
 
-
     # =========================================================
     # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
     # =========================================================
@@ -705,8 +704,8 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
         risk_dist = live_price - sl_price
         
-        # ATR-based quick scalp target (Hard Resistance ki bajaye 1.0x ATR)
-        tp1_price = live_price + (atr_val * 1.0)
+        # Expanded Scalp Target for Optimized RRR (1.5x ATR)
+        tp1_price = live_price + (atr_val * 1.5)
         tp2_price = resistance_4h
         
         reward_dist = tp1_price - live_price
@@ -717,17 +716,16 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
         risk_dist = sl_price - live_price
         
-        # ATR-based quick scalp target (Hard Support ki bajaye 1.0x ATR)
-        tp1_price = live_price - (atr_val * 1.0)
+        # Expanded Scalp Target for Optimized RRR (1.5x ATR)
+        tp1_price = live_price - (atr_val * 1.5)
         tp2_price = support_4h
         
         reward_dist = live_price - tp1_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
         breakeven_lock_level = tp1_price
 
-
-    # 🛑 STRICT FILTER 1: Minimum Risk-to-Reward Ratio Guard
-    MIN_REQUIRED_RRR = 0.8
+    # 🛑 SCALP-OPTIMIZED FILTER 1: Minimum Risk-to-Reward Ratio Guard (Min 1:0.3)
+    MIN_REQUIRED_RRR = 0.3
     if calculated_rrr < MIN_REQUIRED_RRR:
         msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
         print(f"\n{msg}\n")
@@ -798,6 +796,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
+
 
 
 
