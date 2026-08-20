@@ -1,4 +1,4 @@
-name: Live Crypto Dashboard Server
+Name: Live Crypto Dashboard Server
 
 on:
   workflow_dispatch:
@@ -44,33 +44,40 @@ jobs:
           sleep 5
           cat flask.log
 
-      - name: Create Cloudflare Tunnel & Send Link to ntfy
+      - name: Launch Permanent Cloudflare Tunnel & Send Static Link
+        env:
+          TUNNEL_CREDS: ${{ secrets.CLOUDFLARE_CREDENTIALS }}
+          TUNNEL_UUID: "d7f50d0e-21c6-4eb0-b2c6-d8c33b963639"
         run: |
-          echo "Generating Public URL via Cloudflare Tunnel..."
-          
-          # Start Cloudflare Tunnel detaching process
-          nohup cloudflared tunnel --url http://localhost:5000 > cloudflare.log 2>&1 &
-          sleep 10
+          echo "Setting up Cloudflare Credentials & Config..."
+          mkdir -p ~/.cloudflared
+          echo "$TUNNEL_CREDS" > ~/.cloudflared/$TUNNEL_UUID.json
 
-          # Extract trycloudflare.com URL from log file
-          TUNNEL_URL=$(grep -o 'https://[-a-zA-Z0-9]*\.trycloudflare\.com' cloudflare.log | head -n 1)
-          echo "Public Server URL: $TUNNEL_URL"
+          # Generate Cloudflare Config File
+          cat <<EOF > ~/.cloudflared/config.yml
+          tunnel: $TUNNEL_UUID
+          credentials-file: /home/runner/.cloudflared/$TUNNEL_UUID.json
+          ingress:
+            - hostname: hadi88.online
+              service: http://localhost:5000
+            - service: http_status:404
+          EOF
 
-          if [ -z "$TUNNEL_URL" ]; then
-            echo "❌ Failed to generate Cloudflare Tunnel URL"
-            cat cloudflare.log
-            exit 1
-          fi
+          # Run Named Static Tunnel
+          nohup cloudflared tunnel run my-dashboard > cloudflare.log 2>&1 &
+          sleep 8
 
-          # Send Dashboard Link via ntfy.sh
+          STATIC_URL="https://hadi88.online"
+
+          # Send Alert to ntfy.sh
           curl -s -X POST https://ntfy.sh/lev_nasiiar_link_988 \
-            -H "Title: 🚀 Live Crypto Dashboard Link (Cloudflare)" \
-            -H "Click: $TUNNEL_URL" \
+            -H "Title: 🚀 Live Trading Dashboard Active" \
+            -H "Click: $STATIC_URL" \
             -H "Priority: high" \
             -H "Tags: rocket,link" \
-            -d "Your live trading dashboard is active: $TUNNEL_URL"
+            -d "Your permanent dashboard is live: $STATIC_URL"
 
-          echo "✅ ntfy alert sent successfully!"
+          echo "✅ Server successfully live at static address: $STATIC_URL"
 
       - name: Keep Server Running for 3 Hours
         run: |
