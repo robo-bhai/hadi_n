@@ -7,9 +7,27 @@ from flask import Flask, jsonify, render_template, request
 import mysql.connector
 import pandas as pd
 import requests
+import os
+from flask import Flask, jsonify, render_template, request
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
+auth = HTTPBasicAuth()
 
+# Credentials Configuration
+APP_USER = os.getenv("APP_USER", "admin")
+APP_PASS = os.getenv("APP_PASS", "admin123")
+
+users = {
+    APP_USER: generate_password_hash(APP_PASS)
+}
+
+@auth.verify_password
+def verify_password(username, password):
+    if username in users and check_password_hash(users.get(username), password):
+        return username
+    return None
 # =========================================================
 # 🔑 DB CREDENTIALS & CONNECTION SETTINGS
 # =========================================================
@@ -214,6 +232,7 @@ def analyze_sl_trade(trade, df):
 
 @app.route("/")
 @app.route("/portfolio")
+@auth.login_required
 def tab_portfolio():
   try:
     conn = get_db_connection()
@@ -403,6 +422,7 @@ def tab_portfolio():
 
 
 @app.route('/active')
+@auth.login_required
 def tab_active_trades():
   try:
     conn = get_db_connection()
@@ -497,6 +517,7 @@ def tab_active_trades():
 
 #+_+_+_+$+(())())())()
 @app.route("/closed")
+@auth.login_required
 def tab_closed_trades():
   conn = get_db_connection()
   if not conn:
@@ -525,6 +546,7 @@ from datetime import datetime, timezone
 
 
 @app.route('/sl-analysis')
+@auth.login_required
 def tab_sl_analysis():
   try:
     conn = get_db_connection()
