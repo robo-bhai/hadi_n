@@ -16,8 +16,8 @@ app = Flask(__name__)
 auth = HTTPBasicAuth()
 
 # Credentials Configuration
-APP_USER = os.getenv("APP_USER", "admin")
-APP_PASS = os.getenv("APP_PASS", "admin123")
+APP_USER = os.getenv("APP_USER", "hd")
+APP_PASS = os.getenv("APP_PASS", "88123")
 
 users = {
     APP_USER: generate_password_hash(APP_PASS)
