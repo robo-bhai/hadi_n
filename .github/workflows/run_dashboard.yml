@@ -1,4 +1,4 @@
-Name: Live Crypto Dashboard Server
+name: Live Crypto Dashboard Server
 
 on:
   workflow_dispatch:
