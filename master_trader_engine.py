@@ -29,45 +29,76 @@ BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
 # =========================================================
 # 📲 NTFY NOTIFICATION ENGINE (STRICT GITHUB SECRETS MODE)
 # =========================================================
+# =========================================================
+# 📲 NTFY NOTIFICATION ENGINES (SPLIT TOPICS)
+# =========================================================
+
 def send_pushbullet_notification(title, body):
     """
-    Sends ntfy.sh notification for trade execution, skipped setups, or rejections.
-    Strictly loads topic dynamically from GitHub Secret / Environment Variable 'EX_TRADE'.
+    Sends Rejections, Warnings, Skips, and Errors to the ORIGINAL TOPIC (NTFY_TOPIC_TRADER_ENGINE).
     """
-    # Dynamic secret lookup: Primary secret 'EX_TRADE', Fallback 'NTFY_TOPIC_TRADER_ENGINE'
-    topic = os.environ.get("EX_TRADE", os.environ.get("NTFY_TOPIC_TRADER_ENGINE"))
+    topic = os.environ.get("NTFY_TOPIC_TRADER_ENGINE", "lskejej_hdhehje")
     
     if not topic or not topic.strip():
-        print("⚠️ GitHub Secret / Environment Variable 'EX_TRADE' is not set.")
+        print("⚠️ Environment Variable 'NTFY_TOPIC_TRADER_ENGINE' is not set.")
         return
 
     url = f"https://ntfy.sh/{topic.strip()}"
-
-    # Clean title to prevent ASCII encoding issues with header text
-    clean_title = title.encode("ascii", "ignore").decode("ascii").strip()
-    if not clean_title:
-        clean_title = "QUANT ENGINE ALERT"
+    clean_title = title.encode("ascii", "ignore").decode("ascii").strip() or "QUANT ENGINE ALERT"
 
     headers = {
         "Title": clean_title,
         "Priority": "high",
-        "Tags": "chart_with_upwards_trend,signal_strength",
+        "Tags": "warning,no_entry",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     }
 
     try:
-        res = requests.post(
-            url, data=body.encode("utf-8"), headers=headers, timeout=10
-        )
+        res = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=10)
         if res.status_code == 200:
-            print(f"🚀 ntfy notification sent successfully to secret topic via 'EX_TRADE': {clean_title}")
+            print(f"🚀 Alert sent to DEFAULT topic ({topic}): {clean_title}")
         else:
-            print(
-                f"❌ Failed to send ntfy notification: Status {res.status_code} - {res.text}"
-            )
+            print(f"❌ Failed to send alert: Status {res.status_code} - {res.text}")
     except Exception as e:
         print(f"❌ ntfy API Request Error: {e}")
 
+
+def send_ex_trade_signal(trade_title, trade_body, card_png_bytes=None):
+    """
+    Sends EXECUTED SIGNALS strictly to the GitHub Secret 'EX_TRADE' Topic.
+    """
+    topic = os.environ.get("EX_TRADE", os.environ.get("NTFY_TOPIC_TRADER_ENGINE", "lskejej_hdhehje"))
+    if not topic or not topic.strip():
+        print("⚠️ 'EX_TRADE' Secret Topic is not set.")
+        return
+
+    url = f"https://ntfy.sh/{topic.strip()}"
+    clean_title = trade_title.encode("ascii", "ignore").decode("ascii").strip() or "QUANT SIGNAL"
+
+    try:
+        if card_png_bytes:
+            headers = {
+                "Title": clean_title,
+                "Priority": "high",
+                "Tags": "chart_with_upwards_trend,signal_strength",
+                "Message": trade_body,
+                "Filename": "signal_card.png"
+            }
+            res = requests.put(url, data=card_png_bytes, headers=headers, timeout=12)
+        else:
+            headers = {
+                "Title": clean_title,
+                "Priority": "high",
+                "Tags": "chart_with_upwards_trend,signal_strength",
+            }
+            res = requests.post(url, data=trade_body.encode("utf-8"), headers=headers, timeout=10)
+
+        if res.status_code == 200:
+            print(f"🚀 EXECUTED SIGNAL sent to EX_TRADE topic ({topic})")
+        else:
+            print(f"❌ Failed to send Signal: Status {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"❌ Signal Notification Error: {e}")
 
 
 
@@ -1025,37 +1056,18 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     trade_body += f"🛡️ Max Risk    : ${dollar_risk:.2f} USDT (1% Capital)\n"
     trade_body += f"━━━━━━━━━━━━━━━━━━━━━━"
 
-    # 🖼️ Send Image Card + Message directly to ntfy
-    topic = os.environ.get("NTFY_TOPIC_TRADER_ENGINE", "lskejej_hdhehje")
-    ntfy_url = f"https://ntfy.sh/{topic}"
-
+    # 🖼️ Send Image Card + Message strictly to EX_TRADE Topic
     try:
-        # Generate PNG bytes
         card_png_bytes = generate_signal_card(
             symbol=symbol_input, direction=direction, leverage=leverage,
             live_price=live_price, sl_price=sl_price, tp1_price=tp1_price,
             tp2_price=tp2_price, margin=required_margin, pos_value=pos_value,
             net_tp1=net_profit_tp1, net_tp2=net_profit_tp2, rrr=calculated_rrr
         )
-
-        headers = {
-            "Title": trade_title.encode("ascii", "ignore").decode("ascii"),
-            "Priority": "high",
-            "Tags": "chart_with_upwards_trend,signal_strength",
-            "Message": trade_body,
-            "Filename": f"{symbol_input}_signal_card.png"
-        }
-
-        # Send PUT request with binary image body & text message headers
-        res = requests.put(ntfy_url, data=card_png_bytes, headers=headers, timeout=12)
-        if res.status_code == 200:
-            print(f"🚀 Signal Text & Image Card successfully posted to ntfy topic '{topic}'")
-        else:
-            # Fallback to standard text notification if image upload fails
-            send_pushbullet_notification(trade_title, trade_body)
+        send_ex_trade_signal(trade_title, trade_body, card_png_bytes)
     except Exception as e:
-        print(f"⚠️ Image attachment error: {e}. Falling back to standard notification.")
-        send_pushbullet_notification(trade_title, trade_body)
+        print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
+        send_ex_trade_signal(trade_title, trade_body, None)
 
     # 💾 Save Executed Trade to DB
     save_trade_to_db({
@@ -1065,6 +1077,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
+
 
 
 #((((((-&&&-----+'__&&&&'))))))
