@@ -3,9 +3,10 @@ name: Live Crypto Dashboard Server
 on:
   workflow_dispatch:
 
+# cancel-in-progress false kar diya hai taakay naya server pehle poora ready ho sakay
 concurrency:
   group: crypto-dashboard-server
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-server:
@@ -63,9 +64,9 @@ jobs:
             - service: http_status:404
           EOF
 
-          # Run Named Static Tunnel
+          # Connect Tunnel (Cloudflare automatically routes traffic to this new active connection)
           nohup cloudflared tunnel run my-dashboard > cloudflare.log 2>&1 &
-          sleep 8
+          sleep 5
 
           STATIC_URL="https://hadi88.online"
 
