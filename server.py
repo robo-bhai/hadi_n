@@ -67,15 +67,38 @@ def fetch_binance_klines(
 
   url = 'https://fapi.binance.com/fapi/v1/klines'
   params = {'symbol': symbol, 'interval': interval, 'limit': limit}
-  if start_time:
+
+  if start_time and int(start_time) > 0:
     params['startTime'] = int(start_time)
-  if end_time:
+  if end_time and int(end_time) > 0:
     params['endTime'] = int(end_time)
 
+  # Custom User-Agent header to bypass Cloudflare/GitHub Actions IP rate blocks
+  headers = {
+      'User-Agent': (
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,'
+          ' like Gecko) Chrome/115.0.0.0 Safari/537.36'
+      )
+  }
+
   try:
-    res = requests.get(url, params=params, timeout=10)
+    res = requests.get(url, params=params, headers=headers, timeout=10)
     data = res.json()
-    if not isinstance(data, list):
+
+    # Fallback: Agar start_time/end_time ki waja se empty list '[]' aaye, toh bina time range ke retry karo
+    if (
+        (not isinstance(data, list) or len(data) == 0)
+        and start_time
+        and end_time
+    ):
+      print(f'⚠️ Empty data for {symbol} with time bounds. Retrying fallback...')
+      fallback_params = {'symbol': symbol, 'interval': interval, 'limit': limit}
+      res = requests.get(
+          url, params=fallback_params, headers=headers, timeout=10
+      )
+      data = res.json()
+
+    if not isinstance(data, list) or len(data) == 0:
       return None
 
     df = pd.DataFrame(
@@ -102,6 +125,7 @@ def fetch_binance_klines(
   except Exception as e:
     print(f'⚠️ Binance Kline Error for {symbol}: {e}')
     return None
+
 
 
 
@@ -703,6 +727,14 @@ def tab_sl_analysis():
                 end_time=current_time_ms,
             )
 
+            # 🔄 FALLBACK: Agar timestamp ki waja se empty data aaye, toh default recent candles pull karein
+            if df is None or df.empty or len(df) < 2:
+                df = fetch_binance_klines(
+                    symbol=symbol,
+                    interval='1m',
+                    limit=1000
+                )
+
             # Perform post-mortem diagnostic analysis
             analysis = analyze_sl_trade(t, df)
 
@@ -729,6 +761,7 @@ def tab_sl_analysis():
                 conn.close()
             except Exception:
                 pass
+
 
 
 
