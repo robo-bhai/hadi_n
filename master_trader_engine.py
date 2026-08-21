@@ -37,18 +37,21 @@ BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
 # 📲 HARDCODED NTFY NOTIFICATION ENGINES
 # =========================================================
 
+import base64
+import requests
+
 def send_pushbullet_notification(title, body):
     """
-    Sends Rejections, Warnings, Skips, and Errors to HARDCODED Original Topic.
+    Sends Rejections, Warnings, Skips, and Errors to HARDCODED Topic.
     """
-    # 🔴 DEFAULT ALERT TOPIC HARDCODED
     topic = "lskejej_hdhehje"
-
     url = f"https://ntfy.sh/{topic}"
-    clean_title = title.encode("ascii", "ignore").decode("ascii").strip() or "QUANT ENGINE ALERT"
+
+    # Base64 encoding supports full Unicode & Emojis without header failures
+    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
 
     headers = {
-        "Title": clean_title,
+        "X-Title": f"=?utf-8?b?{title_b64}?=",
         "Priority": "high",
         "Tags": "warning,no_entry",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -57,7 +60,7 @@ def send_pushbullet_notification(title, body):
     try:
         res = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=10)
         if res.status_code == 200:
-            print(f"🚀 Alert sent to HARDCODED topic ({topic}): {clean_title}")
+            print(f"🚀 Alert sent to topic ({topic}): {title}")
         else:
             print(f"❌ Failed to send alert: Status {res.status_code} - {res.text}")
     except Exception as e:
@@ -66,29 +69,32 @@ def send_pushbullet_notification(title, body):
 
 def send_ex_trade_signal(trade_title, trade_body, card_png_bytes=None):
     """
-    Sends EXECUTED SIGNALS to HARDCODED EX_TRADE Topic.
+    Sends EXECUTED SIGNALS + Image Card to HARDCODED EX_TRADE Topic.
     """
-    # 🟢 EXECUTED TRADE TOPIC HARDCODED
-    # Note: 'ex_trade_topic_name' ko apne actual ntfy EX_TRADE topic string se replace kar dein.
     topic = "lskejej_hdhehje"
-
     url = f"https://ntfy.sh/{topic}"
-    clean_title = trade_title.encode("ascii", "ignore").decode("ascii").strip() or "QUANT SIGNAL"
+
+    # UTF-8 Encoding for Header Safety with Emojis
+    title_b64 = base64.b64encode(trade_title.encode('utf-8')).decode('utf-8')
+    encoded_title = f"=?utf-8?b?{title_b64}?="
 
     try:
         if card_png_bytes:
+            # Body text base64 encoded for X-Message header safety
+            body_b64 = base64.b64encode(trade_body.encode('utf-8')).decode('utf-8')
+            
             headers = {
-                "Title": clean_title,
+                "X-Title": encoded_title,
+                "X-Message": f"=?utf-8?b?{body_b64}?=",
                 "Priority": "high",
                 "Tags": "chart_with_upwards_trend,signal_strength",
-                "Message": trade_body,
                 "Filename": "signal_card.png",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
             res = requests.put(url, data=card_png_bytes, headers=headers, timeout=12)
         else:
             headers = {
-                "Title": clean_title,
+                "X-Title": encoded_title,
                 "Priority": "high",
                 "Tags": "chart_with_upwards_trend,signal_strength",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -96,12 +102,11 @@ def send_ex_trade_signal(trade_title, trade_body, card_png_bytes=None):
             res = requests.post(url, data=trade_body.encode("utf-8"), headers=headers, timeout=10)
 
         if res.status_code == 200:
-            print(f"🚀 EXECUTED SIGNAL sent to HARDCODED topic ({topic})")
+            print(f"🚀 EXECUTED SIGNAL sent to topic ({topic})")
         else:
             print(f"❌ Failed to send Signal: Status {res.status_code} - {res.text}")
     except Exception as e:
         print(f"❌ Signal Notification Error: {e}")
-
 
 # =========================================================
 # 🔌 DATABASE CONNECTION ENGINE (MYSQL + SQLITE FALLBACK)
