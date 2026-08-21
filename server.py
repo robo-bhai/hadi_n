@@ -641,12 +641,6 @@ import traceback
 from datetime import datetime, timezone
 from flask import Flask, render_template, jsonify
 
-import time
-import sqlite3
-import traceback
-from datetime import datetime, timezone
-from flask import Flask, render_template, jsonify
-
 @app.route('/sl-analysis')
 @auth.login_required
 def tab_sl_analysis():
@@ -738,23 +732,64 @@ def tab_sl_analysis():
 
 
 
+import traceback
+from flask import request, jsonify
+
 @app.route("/api/kline")
+@auth.login_required
 def api_kline():
-  symbol = request.args.get("symbol", "BTCUSDT")
-  tf = request.args.get("tf", "1m")
-  df = fetch_binance_klines(symbol, interval=tf, limit=150)
+    try:
+        # Request Parameters and Input Sanitization
+        symbol = request.args.get("symbol", "BTCUSDT").strip()
+        tf = request.args.get("tf", "1m").strip()
+        
+        try:
+            limit = int(request.args.get("limit", 150))
+            limit = max(1, min(limit, 1000))  # Clamp within safe limits (1-1000)
+        except ValueError:
+            limit = 150
 
-  if df is None or df.empty:
-    return jsonify({"error": "Failed to fetch kline data"}), 400
+        # Fetch market candles dataframe
+        df = fetch_binance_klines(symbol, interval=tf, limit=limit)
 
-  result = {
-      "times": df["open_time"].dt.strftime("%Y-%m-%d %H:%M").tolist(),
-      "open": df["open"].tolist(),
-      "high": df["high"].tolist(),
-      "low": df["low"].tolist(),
-      "close": df["close"].tolist(),
-  }
-  return jsonify(result)
+        if df is None or df.empty:
+            response = jsonify({
+                "status": "error",
+                "message": f"Failed to fetch kline data for {symbol} ({tf})"
+            })
+            response.status_code = 400
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response
+
+        # Format time-series data vectors
+        result = {
+            "status": "success",
+            "symbol": symbol.upper(),
+            "timeframe": tf,
+            "count": len(df),
+            "times": df["open_time"].dt.strftime("%Y-%m-%d %H:%M").tolist(),
+            "open": df["open"].tolist(),
+            "high": df["high"].tolist(),
+            "low": df["low"].tolist(),
+            "close": df["close"].tolist(),
+            "volume": df["volume"].tolist() if "volume" in df.columns else []
+        }
+
+        response = jsonify(result)
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 200
+
+    except Exception as e:
+        traceback.print_exc()
+        response = jsonify({
+            "status": "error",
+            "message": "Internal Kline API Error",
+            "details": str(e)
+        })
+        response.status_code = 500
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response
+
 
 
 if __name__ == "__main__":
