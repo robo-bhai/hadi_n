@@ -44,7 +44,7 @@ def send_pushbullet_notification(title, body):
     """
     Sends Rejections, Warnings, Skips, and Errors to HARDCODED Topic.
     """
-    topic = "lskejej_hdhehje"
+    topic = "trhdjdj_jxauuwg6_xczs"
     url = f"https://ntfy.sh/{topic}"
 
     # Base64 encoding supports full Unicode & Emojis without header failures
