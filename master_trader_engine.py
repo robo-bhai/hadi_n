@@ -33,17 +33,18 @@ BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
 # 📲 NTFY NOTIFICATION ENGINES (SPLIT TOPICS)
 # =========================================================
 
+# =========================================================
+# 📲 HARDCODED NTFY NOTIFICATION ENGINES
+# =========================================================
+
 def send_pushbullet_notification(title, body):
     """
-    Sends Rejections, Warnings, Skips, and Errors to the ORIGINAL TOPIC (NTFY_TOPIC_TRADER_ENGINE).
+    Sends Rejections, Warnings, Skips, and Errors to HARDCODED Original Topic.
     """
-    topic = os.environ.get("NTFY_TOPIC_TRADER_ENGINE", "lskejej_hdhehje")
-    
-    if not topic or not topic.strip():
-        print("⚠️ Environment Variable 'NTFY_TOPIC_TRADER_ENGINE' is not set.")
-        return
+    # 🔴 DEFAULT ALERT TOPIC HARDCODED
+    topic = "lskejej_hdhehje"
 
-    url = f"https://ntfy.sh/{topic.strip()}"
+    url = f"https://ntfy.sh/{topic}"
     clean_title = title.encode("ascii", "ignore").decode("ascii").strip() or "QUANT ENGINE ALERT"
 
     headers = {
@@ -56,7 +57,7 @@ def send_pushbullet_notification(title, body):
     try:
         res = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=10)
         if res.status_code == 200:
-            print(f"🚀 Alert sent to DEFAULT topic ({topic}): {clean_title}")
+            print(f"🚀 Alert sent to HARDCODED topic ({topic}): {clean_title}")
         else:
             print(f"❌ Failed to send alert: Status {res.status_code} - {res.text}")
     except Exception as e:
@@ -65,14 +66,13 @@ def send_pushbullet_notification(title, body):
 
 def send_ex_trade_signal(trade_title, trade_body, card_png_bytes=None):
     """
-    Sends EXECUTED SIGNALS strictly to the GitHub Secret 'EX_TRADE' Topic.
+    Sends EXECUTED SIGNALS to HARDCODED EX_TRADE Topic.
     """
-    topic = os.environ.get("EX_TRADE", os.environ.get("NTFY_TOPIC_TRADER_ENGINE", "lskejej_hdhehje"))
-    if not topic or not topic.strip():
-        print("⚠️ 'EX_TRADE' Secret Topic is not set.")
-        return
+    # 🟢 EXECUTED TRADE TOPIC HARDCODED
+    # Note: 'ex_trade_topic_name' ko apne actual ntfy EX_TRADE topic string se replace kar dein.
+    topic = "lskejej_hdhehje"
 
-    url = f"https://ntfy.sh/{topic.strip()}"
+    url = f"https://ntfy.sh/{topic}"
     clean_title = trade_title.encode("ascii", "ignore").decode("ascii").strip() or "QUANT SIGNAL"
 
     try:
@@ -82,7 +82,8 @@ def send_ex_trade_signal(trade_title, trade_body, card_png_bytes=None):
                 "Priority": "high",
                 "Tags": "chart_with_upwards_trend,signal_strength",
                 "Message": trade_body,
-                "Filename": "signal_card.png"
+                "Filename": "signal_card.png",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
             res = requests.put(url, data=card_png_bytes, headers=headers, timeout=12)
         else:
@@ -90,16 +91,16 @@ def send_ex_trade_signal(trade_title, trade_body, card_png_bytes=None):
                 "Title": clean_title,
                 "Priority": "high",
                 "Tags": "chart_with_upwards_trend,signal_strength",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
             res = requests.post(url, data=trade_body.encode("utf-8"), headers=headers, timeout=10)
 
         if res.status_code == 200:
-            print(f"🚀 EXECUTED SIGNAL sent to EX_TRADE topic ({topic})")
+            print(f"🚀 EXECUTED SIGNAL sent to HARDCODED topic ({topic})")
         else:
             print(f"❌ Failed to send Signal: Status {res.status_code} - {res.text}")
     except Exception as e:
         print(f"❌ Signal Notification Error: {e}")
-
 
 
 # =========================================================
@@ -1055,8 +1056,10 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     trade_body += f"⚖️ Risk/Reward : 1:{calculated_rrr:.2f}\n"
     trade_body += f"🛡️ Max Risk    : ${dollar_risk:.2f} USDT (1% Capital)\n"
     trade_body += f"━━━━━━━━━━━━━━━━━━━━━━"
+ 🎯 TRADE EXECUTION & DB SAVE BLOCK
+# =========================================================
 
-    # 🖼️ Send Image Card + Message strictly to EX_TRADE Topic
+    # 🖼️ Send Image Card + Message strictly to HARDCODED Topic ('lskejej_hdhehje')
     try:
         card_png_bytes = generate_signal_card(
             symbol=symbol_input, direction=direction, leverage=leverage,
