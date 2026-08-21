@@ -230,385 +230,511 @@ def analyze_sl_trade(trade, df):
 # =========================================================
 
 
+from flask import Flask, render_template, jsonify
+from datetime import datetime
+
 @app.route("/")
 @app.route("/portfolio")
 @auth.login_required
 def tab_portfolio():
-  try:
-    conn = get_db_connection()
-    if not conn:
-      return "Database Connection Failed. Check server logs.", 500
+    conn = None
+    try:
+        # Multi-engine connector supports (MySQL / SQLite)
+        db_res = get_db_connection()
+        if not db_res:
+            return "Database Connection Failed. Check server logs.", 500
+        
+        # Handle tuple return (conn, db_type) or direct connection object
+        conn = db_res[0] if isinstance(db_res, tuple) else db_res
+        
+        # Determine dictionary cursor capability dynamically based on connector
+        if hasattr(conn, 'cursor'):
+            try:
+                cursor = conn.cursor(dictionary=True)
+            except TypeError:
+                # SQLite fallback
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+        else:
+            return "Invalid Database Cursor configuration.", 500
 
-    cursor = conn.cursor(dictionary=True)
+        # 1. Fetch Portfolio Stated Balance
+        cursor.execute("SELECT * FROM portfolio WHERE id = 1")
+        port_row = cursor.fetchone()
+        port = dict(port_row) if port_row else {
+            "total_capital": 100.0,
+            "available_capital": 100.0,
+            "frozen_margin": 0.0,
+        }
 
-    # 1. Fetch Portfolio Stated Balance
-    cursor.execute("SELECT * FROM portfolio WHERE id = 1")
-    port = cursor.fetchone() or {
-        "total_capital": 100.0,
-        "available_capital": 100.0,
-        "frozen_margin": 0.0,
-    }
+        # 2. Fetch Active Trades
+        cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
+        active_rows = cursor.fetchall() or []
+        active_trades = [dict(r) for r in active_rows]
 
-    # 2. Fetch Active Trades
-    cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE'")
-    active_trades = cursor.fetchall() or []
+        # 3. Fetch Closed Trades
+        cursor.execute("SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id ASC")
+        closed_rows = cursor.fetchall() or []
+        closed_trades = [dict(r) for r in closed_rows]
 
-    # 3. Fetch Closed Trades
-    cursor.execute(
-        "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id ASC"
-    )
-    closed_trades = cursor.fetchall() or []
+        # Active Trades Floating Calculations
+        total_floating_pnl = 0.0
+        active_margin = 0.0
+        total_active_pos_val = 0.0
 
-    # Active Trades Floating Calculations
-    total_floating_pnl = 0.0
-    active_margin = 0.0
-    total_active_pos_val = 0.0
+        for t in active_trades:
+            symbol = t.get("symbol", "BTCUSDT")
+            live_p = fetch_live_price(symbol)
+            
+            entry = float(t.get("entry_price") or 0.0)
+            pos_val = float(t.get("pos_value") or 0.0)
+            margin = float(t.get("margin_frozen") or 0.0)
+            direction = str(t.get("direction", "")).upper()
 
-    for t in active_trades:
-      symbol = t.get("symbol", "BTCUSDT")
-      live_p = fetch_live_price(symbol)
-      entry = float(t.get("entry_price") or 0.0)
-      pos_val = float(t.get("pos_value") or 0.0)
-      margin = float(t.get("margin_frozen") or 0.0)
-      direction = str(t.get("direction", "")).upper()
+            # Mark price fallback to entry if live price fetch fails
+            if live_p is None or live_p <= 0:
+                live_p = entry
 
-      active_margin += margin
-      total_active_pos_val += pos_val
+            active_margin += margin
+            total_active_pos_val += pos_val
 
-      if direction in ["LONG", "BUY"]:
-        float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0
-      else:
-        float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0
+            if direction in ["LONG", "BUY"]:
+                float_pnl = pos_val * ((live_p - entry) / entry) if entry > 0 else 0.0
+            else:
+                float_pnl = pos_val * ((entry - live_p) / entry) if entry > 0 else 0.0
 
-      total_floating_pnl += float_pnl
+            total_floating_pnl += float_pnl
 
-    # Closed Trades Statistical Audit
-    total_closed_count = len(closed_trades)
-    winning_trades = []
-    losing_trades = []
-    pnls_history = []
+        # Closed Trades Statistical Audit
+        total_closed_count = len(closed_trades)
+        winning_trades = []
+        losing_trades = []
+        pnls_history = []
 
-    for t in closed_trades:
-      pnl = float(t.get("pnl") or 0.0)
-      pnls_history.append(pnl)
-      if pnl > 0:
-        winning_trades.append(pnl)
-      elif pnl < 0:
-        losing_trades.append(abs(pnl))
+        for t in closed_trades:
+            pnl = float(t.get("pnl") or 0.0)
+            pnls_history.append(pnl)
+            if pnl > 0:
+                winning_trades.append(pnl)
+            elif pnl < 0:
+                losing_trades.append(abs(pnl))
 
-    wins_count = len(winning_trades)
-    losses_count = len(losing_trades)
-    total_gross_profit = sum(winning_trades)
-    total_gross_loss = sum(losing_trades)
-    net_realized_pnl = total_gross_profit - total_gross_loss
+        wins_count = len(winning_trades)
+        losses_count = len(losing_trades)
+        total_gross_profit = sum(winning_trades)
+        total_gross_loss = sum(losing_trades)
+        net_realized_pnl = total_gross_profit - total_gross_loss
 
-    win_rate = (
-        (wins_count / total_closed_count * 100)
-        if total_closed_count > 0
-        else 0.0
-    )
+        win_rate = ((wins_count / total_closed_count) * 100) if total_closed_count > 0 else 0.0
 
-    if total_gross_loss > 0:
-      profit_factor = total_gross_profit / total_gross_loss
-    else:
-      profit_factor = total_gross_profit if total_gross_profit > 0 else 1.0
+        if total_gross_loss > 0:
+            profit_factor = total_gross_profit / total_gross_loss
+        else:
+            profit_factor = total_gross_profit if total_gross_profit > 0 else 1.0
 
-    avg_win = (total_gross_profit / wins_count) if wins_count > 0 else 0.0
-    avg_loss = (total_gross_loss / losses_count) if losses_count > 0 else 0.0
-    payoff_ratio = (avg_win / avg_loss) if avg_loss > 0 else avg_win
+        avg_win = (total_gross_profit / wins_count) if wins_count > 0 else 0.0
+        avg_loss = (total_gross_loss / losses_count) if losses_count > 0 else 0.0
+        payoff_ratio = (avg_win / avg_loss) if avg_loss > 0 else avg_win
 
-    loss_rate = 1.0 - (win_rate / 100.0)
-    expectancy = ((win_rate / 100.0) * avg_win) - (loss_rate * avg_loss)
+        loss_rate = 1.0 - (win_rate / 100.0)
+        expectancy = ((win_rate / 100.0) * avg_win) - (loss_rate * avg_loss)
 
-    sharpe_ratio = 0.0
-    max_drawdown_pct = 0.0
+        sharpe_ratio = 0.0
+        max_drawdown_pct = 0.0
 
-    if total_closed_count > 1 and len(pnls_history) > 1:
-      mean_ret = sum(pnls_history) / len(pnls_history)
-      variance = sum((x - mean_ret) ** 2 for x in pnls_history) / len(
-          pnls_history
-      )
-      std_dev = variance**0.5
+        if total_closed_count > 1 and len(pnls_history) > 1:
+            mean_ret = sum(pnls_history) / len(pnls_history)
+            variance = sum((x - mean_ret) ** 2 for x in pnls_history) / len(pnls_history)
+            std_dev = variance ** 0.5
 
-      if std_dev > 0:
-        sharpe_ratio = (mean_ret / std_dev) * (total_closed_count**0.5)
+            if std_dev > 0:
+                sharpe_ratio = (mean_ret / std_dev) * (total_closed_count ** 0.5)
 
-      cum_pnl = 0
-      peak = 0
-      max_dd = 0
-      for p in pnls_history:
-        cum_pnl += p
-        if cum_pnl > peak:
-          peak = cum_pnl
-        dd = peak - cum_pnl
-        if dd > max_dd:
-          max_dd = dd
+            cum_pnl = 0.0
+            peak = 0.0
+            max_dd = 0.0
+            for p in pnls_history:
+                cum_pnl += p
+                if cum_pnl > peak:
+                    peak = cum_pnl
+                dd = peak - cum_pnl
+                if dd > max_dd:
+                    max_dd = dd
 
-      base_cap = float(port.get("total_capital") or 100.0)
-      max_drawdown_pct = (max_dd / base_cap * 100) if base_cap > 0 else 0.0
+            base_cap = float(port.get("total_capital") or 100.0)
+            max_drawdown_pct = (max_dd / base_cap * 100) if base_cap > 0 else 0.0
 
-    # Account Balance Totals
-    avail_cap = float(port.get("available_capital") or 0.0)
-    base_starting_capital = float(port.get("total_capital") or 100.0)
+        # Account Balance Totals
+        avail_cap = float(port.get("available_capital") or 0.0)
+        base_starting_capital = float(port.get("total_capital") or 100.0)
 
-    total_account_equity = (
-        avail_cap + active_margin + net_realized_pnl + total_floating_pnl
-    )
+        # Precise Real-time Equity Audit
+        total_account_equity = avail_cap + active_margin + net_realized_pnl + total_floating_pnl
 
-    all_time_roi = (
-        (
-            (total_account_equity - base_starting_capital)
-            / base_starting_capital
+        all_time_roi = (
+            ((total_account_equity - base_starting_capital) / base_starting_capital) * 100
+            if base_starting_capital > 0
+            else 0.0
         )
-        * 100
-        if base_starting_capital > 0
-        else 0.0
-    )
 
-    effective_leverage = (
-        (total_active_pos_val / total_account_equity)
-        if total_account_equity > 0
-        else 0.0
-    )
-    margin_utilization_pct = (
-        (active_margin / total_account_equity * 100)
-        if total_account_equity > 0
-        else 0.0
-    )
+        effective_leverage = (
+            (total_active_pos_val / total_account_equity)
+            if total_account_equity > 0
+            else 0.0
+        )
+        
+        margin_utilization_pct = (
+            (active_margin / total_account_equity * 100)
+            if total_account_equity > 0
+            else 0.0
+        )
 
-    if margin_utilization_pct > 60:
-      risk_level = "HIGH EXPOSURE"
-    elif margin_utilization_pct > 25:
-      risk_level = "BALANCED"
-    else:
-      risk_level = "CONSERVATIVE"
+        if margin_utilization_pct > 60:
+            risk_level = "HIGH EXPOSURE"
+        elif margin_utilization_pct > 25:
+            risk_level = "BALANCED"
+        else:
+            risk_level = "CONSERVATIVE"
 
-    conn.close()
+        # Complete Audit Payload synchronized with Jinja HTML Template Tags
+        audit = {
+            "base_starting_capital": round(base_starting_capital, 2),
+            "available_capital": round(avail_cap, 2),
+            "active_margin_frozen": round(active_margin, 2),
+            "total_account_equity": round(total_account_equity, 2),
+            "unrealized_floating_pnl": round(total_floating_pnl, 2),
+            "realized_net_pnl": round(net_realized_pnl, 2),
+            "gross_profit": round(total_gross_profit, 2),
+            "gross_loss": round(total_gross_loss, 2),
+            "all_time_roi_pct": round(all_time_roi, 2),
+            "total_trades_audited": total_closed_count + len(active_trades),
+            "closed_trades_count": total_closed_count,
+            "active_trades_count": len(active_trades),
+            "win_rate_pct": round(win_rate, 2),
+            "profit_factor": round(profit_factor, 2),
+            "payoff_ratio": round(payoff_ratio, 2),
+            "expectancy_per_trade": round(expectancy, 2),
+            "avg_win_usdt": round(avg_win, 2),
+            "avg_loss_usdt": round(avg_loss, 2),
+            "sharpe_ratio": round(sharpe_ratio, 2),
+            "max_drawdown_pct": round(max_drawdown_pct, 2),
+            "effective_leverage": round(effective_leverage, 2),
+            "margin_utilization_pct": round(margin_utilization_pct, 1),
+            "risk_level": risk_level,
+        }
 
-    # Dictionary completely synchronized with portfolio.html Jinja tags
-    audit = {
-        "base_starting_capital": round(base_starting_capital, 2),
-        "available_capital": round(avail_cap, 2),
-        "active_margin_frozen": round(active_margin, 2),
-        "total_account_equity": round(total_account_equity, 2),
-        "unrealized_floating_pnl": round(total_floating_pnl, 2),
-        "realized_net_pnl": round(net_realized_pnl, 2),
-        "gross_profit": round(total_gross_profit, 2),
-        "gross_loss": round(total_gross_loss, 2),
-        "all_time_roi_pct": round(all_time_roi, 2),
-        "total_trades_audited": total_closed_count + len(active_trades),
-        "closed_trades_count": total_closed_count,
-        "active_trades_count": len(active_trades),
-        "win_rate_pct": round(win_rate, 2),
-        "profit_factor": round(profit_factor, 2),
-        "payoff_ratio": round(payoff_ratio, 2),
-        "expectancy_per_trade": round(expectancy, 2),
-        "avg_win_usdt": round(avg_win, 2),
-        "avg_loss_usdt": round(avg_loss, 2),
-        "sharpe_ratio": round(sharpe_ratio, 2),
-        "max_drawdown_pct": round(max_drawdown_pct, 2),
-        "effective_leverage": round(effective_leverage, 2),
-        "margin_utilization_pct": round(margin_utilization_pct, 1),
-        "risk_level": risk_level,
-    }
+        return render_template("portfolio.html", audit=audit)
 
-    return render_template("portfolio.html", audit=audit)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Internal Error", "details": str(e)}), 500
 
-  except Exception as e:
-    import traceback
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-    traceback.print_exc()
-    return jsonify({"error": "Internal Error", "details": str(e)}), 500
 
+
+from flask import Flask, render_template, jsonify
+import sqlite3
+import traceback
 
 @app.route('/active')
 @auth.login_required
 def tab_active_trades():
-  try:
-    conn = get_db_connection()
-    if not conn:
-      return 'Database Connection Failed.', 500
+    conn = None
+    try:
+        # Multi-engine database connection handling (MySQL / SQLite)
+        db_res = get_db_connection()
+        if not db_res:
+            return 'Database Connection Failed.', 500
 
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC"
-    )
-    trades = cursor.fetchall() or []
-    conn.close()
+        # Unpack connection and handle dictionary cursors dynamically
+        conn = db_res[0] if isinstance(db_res, tuple) else db_res
 
-    parsed_trades = []
-    total_floating_pnl = 0.0
-    total_margin_used = 0.0
-    long_count = 0
-    short_count = 0
-
-    for t in trades:
-      live_p = fetch_live_price(t.get('symbol', 'BTCUSDT'))
-      entry = float(t.get('entry_price') or 0.0)
-      sl = float(t.get('sl_price') or 0.0)
-      tp1 = float(t.get('tp1_price') or 0.0)
-      margin = float(t.get('margin_frozen') or 0.0)
-      pos_val = float(t.get('pos_value') or 0.0)
-
-      total_margin_used += margin
-      direction = str(t.get('direction', 'LONG')).upper()
-
-      if direction in ['LONG', 'BUY']:
-        long_count += 1
-        pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0.0
-        if live_p >= entry and tp1 > entry:
-          tp_progress = min(
-              100, max(0, ((live_p - entry) / (tp1 - entry)) * 100)
-          )
-          sl_progress = 0
-        elif live_p < entry and entry > sl:
-          sl_progress = min(
-              100, max(0, ((entry - live_p) / (entry - sl)) * 100)
-          )
-          tp_progress = 0
+        if hasattr(conn, 'cursor'):
+            try:
+                cursor = conn.cursor(dictionary=True)
+            except TypeError:
+                # SQLite row_factory fallback
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
         else:
-          tp_progress = sl_progress = 0
-      else:
-        short_count += 1
-        pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0.0
-        if live_p <= entry and entry > tp1:
-          tp_progress = min(
-              100, max(0, ((entry - live_p) / (entry - tp1)) * 100)
-          )
-          sl_progress = 0
-        elif live_p > entry and sl > entry:
-          sl_progress = min(
-              100, max(0, ((live_p - entry) / (sl - entry)) * 100)
-          )
-          tp_progress = 0
-        else:
-          tp_progress = sl_progress = 0
+            return "Invalid Database Cursor configuration.", 500
 
-      pnl_pct = (pnl_usdt / margin * 100) if margin > 0 else 0.0
-      total_floating_pnl += pnl_usdt
+        cursor.execute("SELECT * FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
+        active_rows = cursor.fetchall() or []
+        trades = [dict(r) for r in active_rows]
 
-      parsed_trades.append({
-          'info': t,
-          'live_price': round(live_p, 5),
-          'pnl_usdt': round(pnl_usdt, 2),
-          'pnl_pct': round(pnl_pct, 2),
-          'tp_progress': round(tp_progress, 1),
-          'sl_progress': round(sl_progress, 1),
-      })
+        parsed_trades = []
+        total_floating_pnl = 0.0
+        total_margin_used = 0.0
+        long_count = 0
+        short_count = 0
 
-    summary = {
-        'total_active': len(parsed_trades),
-        'total_floating_pnl': round(total_floating_pnl, 2),
-        'total_margin_used': round(total_margin_used, 2),
-        'long_count': long_count,
-        'short_count': short_count,
-    }
+        for t in trades:
+            symbol = t.get('symbol', 'BTCUSDT')
+            live_p = fetch_live_price(symbol)
+            
+            entry = float(t.get('entry_price') or 0.0)
+            sl = float(t.get('sl_price') or 0.0)
+            tp1 = float(t.get('tp1_price') or 0.0)
+            margin = float(t.get('margin_frozen') or 0.0)
+            pos_val = float(t.get('pos_value') or 0.0)
 
-    return render_template(
-        'active_trades.html', trades=parsed_trades, summary=summary
-    )
+            # Fallback to entry price if API fails
+            if live_p is None or live_p <= 0:
+                live_p = entry
 
-  except Exception as e:
-    import traceback
+            total_margin_used += margin
+            direction = str(t.get('direction', 'LONG')).upper()
 
-    traceback.print_exc()
-    return jsonify({'error': 'Internal Error', 'details': str(e)}), 500
+            if direction in ['LONG', 'BUY']:
+                long_count += 1
+                pnl_usdt = pos_val * ((live_p - entry) / entry) if entry > 0 else 0.0
+                
+                # Long TP & SL Progress Percentage
+                if live_p >= entry and tp1 > entry:
+                    tp_progress = min(100.0, max(0.0, ((live_p - entry) / (tp1 - entry)) * 100))
+                    sl_progress = 0.0
+                elif live_p < entry and entry > sl:
+                    sl_progress = min(100.0, max(0.0, ((entry - live_p) / (entry - sl)) * 100))
+                    tp_progress = 0.0
+                else:
+                    tp_progress = sl_progress = 0.0
+            else:
+                short_count += 1
+                pnl_usdt = pos_val * ((entry - live_p) / entry) if entry > 0 else 0.0
+                
+                # Short TP & SL Progress Percentage
+                if live_p <= entry and entry > tp1:
+                    tp_progress = min(100.0, max(0.0, ((entry - live_p) / (entry - tp1)) * 100))
+                    sl_progress = 0.0
+                elif live_p > entry and sl > entry:
+                    sl_progress = min(100.0, max(0.0, ((live_p - entry) / (sl - entry)) * 100))
+                    tp_progress = 0.0
+                else:
+                    tp_progress = sl_progress = 0.0
+
+            pnl_pct = (pnl_usdt / margin * 100) if margin > 0 else 0.0
+            total_floating_pnl += pnl_usdt
+
+            parsed_trades.append({
+                'info': t,
+                'live_price': round(live_p, 5),
+                'pnl_usdt': round(pnl_usdt, 2),
+                'pnl_pct': round(pnl_pct, 2),
+                'tp_progress': round(tp_progress, 1),
+                'sl_progress': round(sl_progress, 1)
+            })
+
+        summary = {
+            'total_active': len(parsed_trades),
+            'total_floating_pnl': round(total_floating_pnl, 2),
+            'total_margin_used': round(total_margin_used, 2),
+            'long_count': long_count,
+            'short_count': short_count
+        }
+
+        return render_template('active_trades.html', trades=parsed_trades, summary=summary)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': 'Internal Error', 'details': str(e)}), 500
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 
 #+_+_+_+$+(())())())()
+from flask import Flask, render_template, jsonify
+import sqlite3
+import traceback
+from datetime import datetime, timezone
+
 @app.route("/closed")
 @auth.login_required
 def tab_closed_trades():
-  conn = get_db_connection()
-  if not conn:
-    return "Database Connection Failed."
+    conn = None
+    try:
+        # Multi-engine database connection handling (MySQL / SQLite)
+        db_res = get_db_connection()
+        if not db_res:
+            return "Database Connection Failed.", 500
 
-  cursor = conn.cursor(dictionary=True)
-  cursor.execute(
-      "SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id DESC"
-  )
-  trades = cursor.fetchall() or []
-  conn.close()
+        # Unpack connection and handle dictionary cursors dynamically
+        conn = db_res[0] if isinstance(db_res, tuple) else db_res
 
-  parsed_trades = []
-  for t in trades:
-    parsed_trades.append({
-        "info": t,
-        "pnl": round(float(t["pnl"] or 0.0), 2),
-        "status": t["status"],
-    })
+        if hasattr(conn, 'cursor'):
+            try:
+                cursor = conn.cursor(dictionary=True)
+            except TypeError:
+                # SQLite row_factory fallback
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+        else:
+            return "Invalid Database Cursor configuration.", 500
 
-  return render_template("closed_trades.html", trades=parsed_trades)
+        # Fetch all closed/archived trades
+        cursor.execute("SELECT * FROM trades WHERE status != 'ACTIVE' ORDER BY id DESC")
+        closed_rows = cursor.fetchall() or []
+        trades = [dict(r) for r in closed_rows]
+
+        parsed_trades = []
+        total_realized_pnl = 0.0
+        wins_count = 0
+        losses_count = 0
+
+        for t in trades:
+            pnl_val = float(t.get("pnl") or 0.0)
+            margin = float(t.get("margin_frozen") or 0.0)
+            
+            roi_pct = (pnl_val / margin * 100) if margin > 0 else 0.0
+            total_realized_pnl += pnl_val
+
+            if pnl_val > 0:
+                wins_count += 1
+            elif pnl_val < 0:
+                losses_count += 1
+
+            parsed_trades.append({
+                "info": t,
+                "pnl": round(pnl_val, 2),
+                "roi_pct": round(roi_pct, 2),
+                "status": t.get("status", "CLOSED"),
+            })
+
+        summary = {
+            "total_closed": len(parsed_trades),
+            "total_realized_pnl": round(total_realized_pnl, 2),
+            "wins_count": wins_count,
+            "losses_count": losses_count,
+            "win_rate_pct": round((wins_count / len(parsed_trades) * 100), 2) if parsed_trades else 0.0
+        }
+
+        return render_template("closed_trades.html", trades=parsed_trades, summary=summary)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": "Internal Error", "details": str(e)}), 500
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 import time
+import sqlite3
+import traceback
 from datetime import datetime, timezone
+from flask import Flask, render_template, jsonify
 
+import time
+import sqlite3
+import traceback
+from datetime import datetime, timezone
+from flask import Flask, render_template, jsonify
 
 @app.route('/sl-analysis')
 @auth.login_required
 def tab_sl_analysis():
-  try:
-    conn = get_db_connection()
-    if not conn:
-      return 'Database Connection Failed.', 500
+    conn = None
+    try:
+        # Multi-engine database connection handling (MySQL / SQLite)
+        db_res = get_db_connection()
+        if not db_res:
+            return 'Database Connection Failed.', 500
 
-    cursor = conn.cursor(dictionary=True)
-    # SL trades aur overall losing trades filter karna
-    cursor.execute(
-        "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id"
-        ' DESC'
-    )
-    sl_trades = cursor.fetchall() or []
-    conn.close()
+        # Unpack connection and handle dictionary cursors dynamically
+        conn = db_res[0] if isinstance(db_res, tuple) else db_res
 
-    analyzed_list = []
-    current_time_ms = int(time.time() * 1000)
-
-    for t in sl_trades:
-      entry_time = t.get('timestamp')
-
-      # Datetime string parsing fix
-      if isinstance(entry_time, str):
-        try:
-          entry_time = datetime.strptime(entry_time, '%Y-%m-%d %H:%M:%S')
-        except ValueError:
-          entry_time = datetime.now()
-
-      if isinstance(entry_time, datetime):
-        # Timezone conversion for Unix epoch ms
-        if entry_time.tzinfo is None:
-          start_ms = int(entry_time.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        if hasattr(conn, 'cursor'):
+            try:
+                cursor = conn.cursor(dictionary=True)
+            except TypeError:
+                # SQLite row_factory fallback
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
         else:
-          start_ms = int(entry_time.timestamp() * 1000)
-      else:
-        start_ms = current_time_ms - (3600 * 1000)  # Fallback to 1 hour back
+            return "Invalid Database Cursor configuration.", 500
 
-      # Trade entry se lekar current execution context tak 1-minute candles download karna
-      df = fetch_binance_klines(
-          symbol=t['symbol'],
-          interval='1m',
-          limit=1000,  # Up to 1000 1-minute candles (approx 16.6 hours)
-          start_time=start_ms,
-          end_time=current_time_ms,
-      )
+        # Query all Stop-Loss hit or net negative PnL trades
+        cursor.execute(
+            "SELECT * FROM trades WHERE status LIKE '%SL%' OR pnl < 0 ORDER BY id DESC"
+        )
+        sl_rows = cursor.fetchall() or []
+        sl_trades = [dict(r) for r in sl_rows]
 
-      # Diagnostic post-mortem pass
-      analysis = analyze_sl_trade(t, df)
+        analyzed_list = []
+        current_time_ms = int(time.time() * 1000)
 
-      analyzed_list.append({
-          'trade': t,
-          'analysis': analysis,
-          'candles_audited': len(df) if df is not None else 0,
-      })
+        for t in sl_trades:
+            entry_time = t.get('timestamp')
 
-    return render_template('sl_analysis.html', trades=analyzed_list)
+            # Datetime string parsing and fallback handling
+            if isinstance(entry_time, str):
+                try:
+                    entry_time = datetime.strptime(entry_time, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    entry_time = datetime.now(timezone.utc)
 
-  except Exception as e:
-    import traceback
+            if isinstance(entry_time, datetime):
+                if entry_time.tzinfo is None:
+                    start_ms = int(entry_time.replace(tzinfo=timezone.utc).timestamp() * 1000)
+                else:
+                    start_ms = int(entry_time.timestamp() * 1000)
+            else:
+                start_ms = current_time_ms - (3600 * 1000)  # Fallback to 1 hour back
 
-    traceback.print_exc()
-    return jsonify({'error': 'Analysis Engine Error', 'details': str(e)}), 500
+            symbol = t.get('symbol', 'BTCUSDT')
+
+            # Fetch 1-minute historical candles from entry time to current context
+            df = fetch_binance_klines(
+                symbol=symbol,
+                interval='1m',
+                limit=1000,
+                start_time=start_ms,
+                end_time=current_time_ms,
+            )
+
+            # Perform post-mortem diagnostic analysis
+            analysis = analyze_sl_trade(t, df)
+
+            analyzed_list.append({
+                'trade': t,
+                'analysis': analysis,
+                'candles_audited': len(df) if (df is not None and hasattr(df, '__len__')) else 0,
+            })
+
+        summary = {
+            'total_sl_trades': len(analyzed_list),
+            'total_pnl_loss': round(sum(float(x['trade'].get('pnl') or 0.0) for x in analyzed_list if float(x['trade'].get('pnl') or 0.0) < 0), 2)
+        }
+
+        return render_template('sl_analysis.html', trades=analyzed_list, summary=summary)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': 'Analysis Engine Error', 'details': str(e)}), 500
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 
