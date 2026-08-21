@@ -780,7 +780,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         send_pushbullet_notification(f"🚫 [DYNAMIC COOLDOWN] {symbol_input}", msg)
         return False
 
-
     # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
     corr_risk, corr_msg = check_correlation_exposure(symbol_input)
     if corr_risk:
@@ -1013,7 +1012,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"║ 🛡️ MAX RISK AMOUNT     : ${dollar_risk:<15.2f} (Strict 1% Total Equity)║")
     print("╚" + "═" * 68 + "╝")
 
-    # PUSHBULLET NOTIFICATION FOR EXECUTED TRADE
     # =========================================================
     # 📲 PROFESSIONAL SIGNAL FORMATTER & IMAGE CARD GENERATOR
     # =========================================================
@@ -1061,8 +1059,10 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     trade_body += f"⚖️ Risk/Reward : 1:{calculated_rrr:.2f}\n"
     trade_body += f"🛡️ Max Risk    : ${dollar_risk:.2f} USDT (1% Capital)\n"
     trade_body += f"━━━━━━━━━━━━━━━━━━━━━━"
- 🎯 TRADE EXECUTION & DB SAVE BLOCK
-# =========================================================
+
+    # =========================================================
+    # 🎯 TRADE EXECUTION & DB SAVE BLOCK
+    # =========================================================
 
     # 🖼️ Send Image Card + Message strictly to HARDCODED Topic ('lskejej_hdhehje')
     try:
@@ -1085,6 +1085,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
+
 
 
 
