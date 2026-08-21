@@ -962,7 +962,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         breakeven_lock_level = tp1_price
 
     # 🛑 SCALP-OPTIMIZED FILTER 1: Minimum Risk-to-Reward Ratio Guard (Min 1:0.3)
-    MIN_REQUIRED_RRR = 0.3
+    MIN_REQUIRED_RRR = 0.2
     if calculated_rrr < MIN_REQUIRED_RRR:
         msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
         print(f"\n{msg}\n")
