@@ -28,6 +28,7 @@ jobs:
 
       - name: Run Market Scanner Script
         env:
+          EX_TRADE: ${{ secrets.EX_TRADE }}
           PASS_DB_2: ${{ secrets.PASS_DB_2 }}
           NTFY_FOR_SCANNER: ${{ secrets.NTFY_FOR_SCANNER }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_TRADER_ENGINE }}

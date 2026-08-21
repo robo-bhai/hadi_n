@@ -26,17 +26,22 @@ BINANCE_FUTURES_OI_URL = 'https://fapi.binance.com/fapi/v1/openInterest'
 # =========================================================
 # 📲 PUSHBULLET NOTIFICATION ENGINE
 # =========================================================
+# =========================================================
+# 📲 NTFY NOTIFICATION ENGINE (STRICT GITHUB SECRETS MODE)
+# =========================================================
 def send_pushbullet_notification(title, body):
     """
     Sends ntfy.sh notification for trade execution, skipped setups, or rejections.
-    Strictly loads topic from GitHub Secrets / Environment Variables.
+    Strictly loads topic dynamically from GitHub Secret / Environment Variable 'EX_TRADE'.
     """
-    topic = os.environ.get("NTFY_TOPIC_TRADER_ENGINE")
-    if not topic:
-        print("⚠️ NTFY_TOPIC environment variable / secret is not set.")
+    # Dynamic secret lookup: Primary secret 'EX_TRADE', Fallback 'NTFY_TOPIC_TRADER_ENGINE'
+    topic = os.environ.get("EX_TRADE", os.environ.get("NTFY_TOPIC_TRADER_ENGINE"))
+    
+    if not topic or not topic.strip():
+        print("⚠️ GitHub Secret / Environment Variable 'EX_TRADE' is not set.")
         return
 
-    url = f"https://ntfy.sh/{topic}"
+    url = f"https://ntfy.sh/{topic.strip()}"
 
     # Clean title to prevent ASCII encoding issues with header text
     clean_title = title.encode("ascii", "ignore").decode("ascii").strip()
@@ -46,7 +51,7 @@ def send_pushbullet_notification(title, body):
     headers = {
         "Title": clean_title,
         "Priority": "high",
-        "Tags": "chart_with_upwards_trend,warning",
+        "Tags": "chart_with_upwards_trend,signal_strength",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     }
 
@@ -55,13 +60,14 @@ def send_pushbullet_notification(title, body):
             url, data=body.encode("utf-8"), headers=headers, timeout=10
         )
         if res.status_code == 200:
-            print(f"🚀 ntfy notification sent successfully for: {clean_title}")
+            print(f"🚀 ntfy notification sent successfully to secret topic via 'EX_TRADE': {clean_title}")
         else:
             print(
                 f"❌ Failed to send ntfy notification: Status {res.status_code} - {res.text}"
             )
     except Exception as e:
         print(f"❌ ntfy API Request Error: {e}")
+
 
 
 
@@ -629,6 +635,64 @@ def check_micro_momentum(df, direction):
 # =========================================================
 # 🏛️ CORE TRADE EXECUTION LOGIC
 # =========================================================
+
+import io
+from PIL import Image, ImageDraw, ImageFont
+
+def generate_signal_card(symbol, direction, leverage, live_price, sl_price, tp1_price, tp2_price, margin, pos_value, net_tp1, net_tp2, rrr):
+    """
+    Generates a professional dark-themed trading signal card as bytes.
+    """
+    # Canvas Dimensions & Colors
+    width, height = 800, 500
+    bg_color = (15, 23, 42)      # Slate Dark 900
+    card_bg = (30, 41, 59)       # Slate Dark 800
+    text_white = (248, 250, 252)
+    text_gray = (148, 163, 184)
+    green = (34, 197, 94)        # Long Accent
+    red = (239, 68, 68)          # Short Accent
+
+    accent_color = green if direction == "LONG" else red
+
+    img = Image.new("RGB", (width, height), bg_color)
+    draw = ImageDraw.Draw(img)
+
+    # Outer Border & Card Header
+    draw.rectangle([20, 20, width - 20, height - 20], fill=card_bg, outline=accent_color, width=2)
+    draw.rectangle([20, 20, width - 20, 90], fill=accent_color)
+
+    # Load Default Fonts
+    font_title = ImageFont.load_default()
+    font_body = ImageFont.load_default()
+
+    # Header Text
+    header_text = f"QUANT SIGNAL: {direction} #{symbol} ({leverage}x Cross)"
+    draw.text((40, 42), header_text, fill=(255, 255, 255), font=font_title)
+
+    # Signal Data Sections
+    lines = [
+        f"ENTRY PRICE : ${live_price:.4f}",
+        f"STOP LOSS   : ${sl_price:.4f}",
+        f"TARGET 1    : ${tp1_price:.4f} (Net Profit: +${net_tp1:.2f})",
+        f"TARGET 2    : ${tp2_price:.4f} (Net Profit: +${net_tp2:.2f})",
+        "---------------------------------------------------",
+        f"MARGIN USED : ${margin:.2f} USDT",
+        f"POS VALUE   : ${pos_value:.2f} USDT",
+        f"RISK/REWARD : 1:{rrr:.2f}"
+    ]
+
+    y_offset = 120
+    for line in lines:
+        color = text_white if ":" in line else text_gray
+        draw.text((50, y_offset), line, fill=color, font=font_body)
+        y_offset += 40
+
+    # Save to Bytes Buffer
+    img_byte_arr = io.BytesIO()
+    img.save(img_byte_arr, format='PNG')
+    return img_byte_arr.getvalue()
+
+
 def process_trade_logic(symbol_input, base_risk_pct=1.5):
     """
     Main Trader Engine execution logic with Scalp-Optimized Dynamic Key-Level RRR (Min 1:0.3) & Strict 1% Total Risk Guard.
@@ -913,24 +977,87 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print("╚" + "═" * 68 + "╝")
 
     # PUSHBULLET NOTIFICATION FOR EXECUTED TRADE
+    # =========================================================
+    # 📲 PROFESSIONAL SIGNAL FORMATTER & IMAGE CARD GENERATOR
+    # =========================================================
     direction_emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
-    trade_title = f"{direction_emoji} | {symbol_input} | {leverage}x"
+    trade_title = f"{direction_emoji} | {symbol_input} | {leverage}x Cross"
     
-    trade_body = f"📊 SIGNAL: {direction} {symbol_input}\n"
-    trade_body += f"⚡ Leverage: Cross {leverage}x\n"
-    trade_body += f"------------------------------------\n"
-    trade_body += f"📍 ENTRY : ${live_price:.4f}\n"
-    trade_body += f"🎯 TP 1  : ${tp1_price:.4f} (Scalp)\n"
-    trade_body += f"🚀 TP 2  : ${tp2_price:.4f} (Runner)\n"
-    trade_body += f"🛑 STOP  : ${sl_price:.4f} (-{sl_dist_pct:.2f}%)\n"
-    trade_body += f"------------------------------------\n"
-    trade_body += f"💼 Margin Needed : ${required_margin:.2f} USDT\n"
-    trade_body += f"🛡️ Max Risk Size : ${dollar_risk:.2f} USDT (1% Capital)\n"
-    trade_body += f"📊 Score: {score}/100 | RRR: 1:{calculated_rrr:.2f}\n"
-    trade_body += f"📈 Active Trades : {active_count + 1}/5"
+    # Timestamps & Expiry
+    now_utc = datetime.utcnow()
+    timestamp_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    expire_time_str = (now_utc + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S UTC (24 Hours)")
 
-    send_pushbullet_notification(trade_title, trade_body)
+    # 💰 Fee & Net Profit Calculations (0.10% Total Fee)
+    ROUND_TRIP_FEE_PCT = 0.0010
+    estimated_fee_usdt = pos_value * ROUND_TRIP_FEE_PCT
 
+    if direction == "LONG":
+        gross_tp1 = (tp1_price - live_price) * coin_qty
+        gross_tp2 = (tp2_price - live_price) * coin_qty
+    else:
+        gross_tp1 = (live_price - tp1_price) * coin_qty
+        gross_tp2 = (live_price - tp2_price) * coin_qty
+
+    net_profit_tp1 = max(0.0, gross_tp1 - estimated_fee_usdt)
+    net_profit_tp2 = max(0.0, gross_tp2 - estimated_fee_usdt)
+
+    # 📝 Responsive Text Body
+    trade_body = f"🏛️ QUANT TRADING SIGNAL 🏛️\n"
+    trade_body += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    trade_body += f"📌 Pair: #{symbol_input}\n"
+    trade_body += f"📈 Direction: {direction} ({leverage}x Cross)\n"
+    trade_body += f"⏱️ Timestamp: {timestamp_str}\n"
+    trade_body += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    trade_body += f"📍 Entry Price : ${live_price:.4f}\n"
+    trade_body += f"📊 Live Price  : ${live_price:.4f}\n"
+    trade_body += f"🛑 Stop Loss   : ${sl_price:.4f} (-{sl_dist_pct:.2f}%)\n"
+    trade_body += f"🎯 Target 1    : ${tp1_price:.4f}\n"
+    trade_body += f"🚀 Target 2    : ${tp2_price:.4f}\n"
+    trade_body += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    trade_body += f"🔒 Margin Used : ${required_margin:.2f} USDT\n"
+    trade_body += f"💼 Position Size: ${pos_value:.2f} USDT ({coin_qty:.4f} {symbol_input.replace('USDT','')})\n"
+    trade_body += f"💵 Est Net TP1 : +${net_profit_tp1:.2f} USDT (Fee: -${estimated_fee_usdt:.2f})\n"
+    trade_body += f"💵 Est Net TP2 : +${net_profit_tp2:.2f} USDT\n"
+    trade_body += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    trade_body += f"⏳ Expires In  : {expire_time_str}\n"
+    trade_body += f"⚖️ Risk/Reward : 1:{calculated_rrr:.2f}\n"
+    trade_body += f"🛡️ Max Risk    : ${dollar_risk:.2f} USDT (1% Capital)\n"
+    trade_body += f"━━━━━━━━━━━━━━━━━━━━━━"
+
+    # 🖼️ Send Image Card + Message directly to ntfy
+    topic = os.environ.get("NTFY_TOPIC_TRADER_ENGINE", "lskejej_hdhehje")
+    ntfy_url = f"https://ntfy.sh/{topic}"
+
+    try:
+        # Generate PNG bytes
+        card_png_bytes = generate_signal_card(
+            symbol=symbol_input, direction=direction, leverage=leverage,
+            live_price=live_price, sl_price=sl_price, tp1_price=tp1_price,
+            tp2_price=tp2_price, margin=required_margin, pos_value=pos_value,
+            net_tp1=net_profit_tp1, net_tp2=net_profit_tp2, rrr=calculated_rrr
+        )
+
+        headers = {
+            "Title": trade_title.encode("ascii", "ignore").decode("ascii"),
+            "Priority": "high",
+            "Tags": "chart_with_upwards_trend,signal_strength",
+            "Message": trade_body,
+            "Filename": f"{symbol_input}_signal_card.png"
+        }
+
+        # Send PUT request with binary image body & text message headers
+        res = requests.put(ntfy_url, data=card_png_bytes, headers=headers, timeout=12)
+        if res.status_code == 200:
+            print(f"🚀 Signal Text & Image Card successfully posted to ntfy topic '{topic}'")
+        else:
+            # Fallback to standard text notification if image upload fails
+            send_pushbullet_notification(trade_title, trade_body)
+    except Exception as e:
+        print(f"⚠️ Image attachment error: {e}. Falling back to standard notification.")
+        send_pushbullet_notification(trade_title, trade_body)
+
+    # 💾 Save Executed Trade to DB
     save_trade_to_db({
         'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
         'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
@@ -940,6 +1067,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     return True
 
 
+#((((((-&&&-----+'__&&&&'))))))
 
 
 
