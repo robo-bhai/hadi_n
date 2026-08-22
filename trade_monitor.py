@@ -656,67 +656,6 @@ import time
 import requests
 
 
-# Timezone-Independent High/Low Fetcher
-def fetch_trade_period_high_low(symbol, open_duration_minutes):
-  try:
-    clean_symbol = (
-        str(symbol)
-        .replace('/', '')
-        .replace('-', '')
-        .replace(':', '')
-        .strip()
-        .upper()
-    )
-
-    # Duration ke hisab se kitni 15m candles chahiye
-    needed_candles = int((open_duration_minutes // 15) + 4)
-    needed_candles = min(max(needed_candles, 5), 1000)
-
-    headers = {'User-Agent': 'Mozilla/5.0'}
-
-    # Public Binance Klines without Timezone Dependency
-    url = 'https://fapi.binance.com/fapi/v1/klines'
-    params = {
-        'symbol': clean_symbol,
-        'interval': '15m',
-        'limit': needed_candles,
-    }
-
-    res = requests.get(url, params=params, headers=headers, timeout=5)
-
-    if res.status_code == 200:
-      klines = res.json()
-      if klines:
-        highs = [float(k[2]) for k in klines]
-        lows = [float(k[3]) for k in klines]
-        return max(highs), min(lows)
-
-    # Fallback to Bybit
-    bybit_url = 'https://api.bybit.com/v5/market/kline'
-    bybit_params = {
-        'category': 'linear',
-        'symbol': clean_symbol,
-        'interval': '15',
-        'limit': needed_candles,
-    }
-    res_bybit = requests.get(
-        bybit_url, params=bybit_params, headers=headers, timeout=5
-    )
-
-    if res_bybit.status_code == 200:
-      data = res_bybit.json()
-      klines = data.get('result', {}).get('list', [])
-      if klines:
-        highs = [float(k[2]) for k in klines]
-        lows = [float(k[3]) for k in klines]
-        return max(highs), min(lows)
-
-  except Exception as e:
-    print(f'⚠️ High/Low Fetch Error for {symbol}: {e}')
-
-  return None, None
-
-
 def generate_and_send_report():
   auto_migrate_db()
   process_active_trades()
@@ -811,15 +750,24 @@ def generate_and_send_report():
     float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
     total_floating_pnl += float_pnl
 
-    # Duration in Minutes Calculation
-    open_duration_minutes = 60
+    # Duration & High/Low via Internal Kline Engine
     trade_life_str = '0m'
+    period_high = max(entry_p, live_p)
+    period_low = min(entry_p, live_p)
+
     if trade_ts:
       try:
         t_dt = datetime.strptime(str(trade_ts), '%Y-%m-%d %H:%M:%S')
+        start_ms = int(t_dt.timestamp() * 1000)
+
+        # Internal working candle fetcher execute karna
+        df_period = fetch_incremental_klines(symbol, start_ms)
+        if df_period is not None and not df_period.empty:
+          period_high = float(df_period['high'].max())
+          period_low = float(df_period['low'].min())
+
         t_diff = int((now_dt - t_dt).total_seconds())
         if t_diff > 0:
-          open_duration_minutes = t_diff // 60
           t_days = t_diff // 86400
           t_rem = t_diff % 86400
           t_hours = t_rem // 3600
@@ -833,18 +781,7 @@ def generate_and_send_report():
           t_parts.append(f'{t_mins}m')
           trade_life_str = ' '.join(t_parts)
       except Exception as e:
-        print(f'⚠️ Trade life calculation error: {e}')
-
-    # Fetch High/Low based on Open Minutes
-    period_high, period_low = fetch_trade_period_high_low(
-        symbol, open_duration_minutes
-    )
-
-    # Fallback Guard
-    if period_high is None:
-      period_high = max(entry_p, live_p)
-    if period_low is None:
-      period_low = min(entry_p, live_p)
+        print(f'⚠️ High/Low extraction error for {symbol}: {e}')
 
     active_positions_details.append({
         'symbol': symbol,
@@ -978,7 +915,6 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
-
 
 
 
