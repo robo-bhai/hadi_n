@@ -760,7 +760,6 @@ def generate_and_send_report():
         t_dt = datetime.strptime(str(trade_ts), '%Y-%m-%d %H:%M:%S')
         start_ms = int(t_dt.timestamp() * 1000)
 
-        # Internal working candle fetcher execute karna
         df_period = fetch_incremental_klines(symbol, start_ms)
         if df_period is not None and not df_period.empty:
           period_high = float(df_period['high'].max())
@@ -783,6 +782,36 @@ def generate_and_send_report():
       except Exception as e:
         print(f'⚠️ High/Low extraction error for {symbol}: {e}')
 
+    # 📊 Max % movement towards SL & TP Calculation
+    sl_drawdown_pct = 0.0
+    tp_progress_pct = 0.0
+
+    if direction == 'LONG':
+      # Downward move towards SL
+      if sl_p and entry_p > sl_p:
+        max_down = entry_p - period_low
+        total_sl_dist = entry_p - sl_p
+        sl_drawdown_pct = max(0.0, (max_down / total_sl_dist) * 100)
+
+      # Upward move towards TP1
+      if tp1_p and tp1_p > entry_p:
+        max_up = period_high - entry_p
+        total_tp_dist = tp1_p - entry_p
+        tp_progress_pct = max(0.0, (max_up / total_tp_dist) * 100)
+
+    else:  # SHORT
+      # Upward move towards SL (For Short, High is danger)
+      if sl_p and sl_p > entry_p:
+        max_up = period_high - entry_p
+        total_sl_dist = sl_p - entry_p
+        sl_drawdown_pct = max(0.0, (max_up / total_sl_dist) * 100)
+
+      # Downward move towards TP1 (For Short, Low is profit)
+      if tp1_p and entry_p > tp1_p:
+        max_down = entry_p - period_low
+        total_tp_dist = entry_p - tp1_p
+        tp_progress_pct = max(0.0, (max_down / total_tp_dist) * 100)
+
     active_positions_details.append({
         'symbol': symbol,
         'direction': direction,
@@ -790,12 +819,16 @@ def generate_and_send_report():
         'leverage': lev,
         'pos_val': pos_val,
         'entry_p': entry_p,
+        'sl_p': sl_p,
+        'tp1_p': tp1_p,
         'live_p': live_p,
         'float_pnl': float_pnl,
         'float_pnl_pct': float_pnl_pct,
         'trade_life': trade_life_str,
         'period_high': period_high,
         'period_low': period_low,
+        'sl_drawdown_pct': sl_drawdown_pct,
+        'tp_progress_pct': tp_progress_pct,
     })
 
   live_total_balance = base_total_capital + total_floating_pnl
@@ -862,6 +895,14 @@ def generate_and_send_report():
       msg1 += f"• Open Duration: ⏱️ {pos['trade_life']}\n"
       msg1 += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
       msg1 += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
+      msg1 += (
+          f"• Stop Loss    : 🛑 ${fmt_p(pos['sl_p'])} (max down:"
+          f" {pos['sl_drawdown_pct']:.1f}%)\n"
+      )
+      msg1 += (
+          f"• Take Profit  : 🎯 ${fmt_p(pos['tp1_p'])} (max up:"
+          f" {pos['tp_progress_pct']:.1f}%)\n"
+      )
       msg1 += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
       msg1 += f"• Period Range : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
       msg1 += (
@@ -915,7 +956,6 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
-
 
 
 
