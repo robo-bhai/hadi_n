@@ -651,6 +651,7 @@ def process_active_trades():
 # 📋 GENERATE & SEND REPORT
 # =========================================================
 
+from datetime import datetime
 import time  # Top par import ensure kar lein
 
 
@@ -670,6 +671,44 @@ def generate_and_send_report():
   )
   port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
   base_total_capital, avail_capital, frozen_margin = port_row
+
+  # --- System Active Duration Calculation ---
+  cursor.execute('SELECT MIN(timestamp) FROM trades')
+  first_trade_row = cursor.fetchone()
+
+  duration_str = '0 days 0 hours'
+  if first_trade_row and first_trade_row[0]:
+    try:
+      first_ts_str = str(first_trade_row[0])
+      first_dt = datetime.strptime(first_ts_str, '%Y-%m-%d %H:%M:%S')
+      now_dt = datetime.now()
+
+      diff_seconds = int((now_dt - first_dt).total_seconds())
+
+      if diff_seconds > 0:
+        months = diff_seconds // (30 * 86400)
+        rem_sec = diff_seconds % (30 * 86400)
+
+        days = rem_sec // 86400
+        rem_sec %= 86400
+
+        hours = rem_sec // 3600
+        rem_sec %= 3600
+
+        minutes = rem_sec // 60
+
+        parts = []
+        if months > 0:
+          parts.append(f'{months} month' if months == 1 else f'{months} months')
+        if days > 0 or months > 0:
+          parts.append(f'{days} day' if days == 1 else f'{days} days')
+        if hours > 0 or days > 0 or months > 0:
+          parts.append(f'{hours} hour' if hours == 1 else f'{hours} hours')
+        parts.append(f'{minutes} min' if minutes == 1 else f'{minutes} mins')
+
+        duration_str = ' '.join(parts)
+    except Exception as e:
+      print(f'⚠️ Duration parsing error: {e}')
 
   cursor.execute(
       'SELECT id, symbol, direction, entry_price, sl_price, tp1_price,'
@@ -738,7 +777,7 @@ def generate_and_send_report():
       (t[1] if t[1] is not None else 0.0) for t in closed_trades
   )
 
-  # --- Advanced Analytics (ROI, Win Ratio, Profit Factor, Avg Win) ---
+  # --- Advanced Analytics ---
   winning_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] > 0]
   losing_pnl = abs(sum(t[1] for t in closed_trades if t[1] and t[1] < 0))
 
@@ -746,8 +785,6 @@ def generate_and_send_report():
   win_count = len(winning_trades_pnl)
 
   win_ratio = (win_count / closed_count * 100) if closed_count > 0 else 0.0
-
-  # Average Win Amount Calculation
   avg_win_trade = (winning_pnl / win_count) if win_count > 0 else 0.0
 
   if losing_pnl > 0:
@@ -799,13 +836,15 @@ def generate_and_send_report():
       tags=['zap', 'briefcase'],
   )
 
-  # ⏳ Delay to keep order intact
+  # Delay for exact delivery order
   time.sleep(2)
 
   # =========================================================
   # 📩 STEP 2: SEND PORTFOLIO STATS NOTIFICATION SECOND
   # =========================================================
   msg2 = '📊 PORTFOLIO BREAKDOWN\n'
+  msg2 += '───────────────────────────\n'
+  msg2 += f'⏳ System Runtime: {duration_str}\n'
   msg2 += '───────────────────────────\n'
   msg2 += f'💎 Total Balance : ${live_total_balance:.2f} USDT (Live)\n'
   msg2 += f'💵 Base Capital  : ${base_total_capital:.2f} USDT\n'
@@ -828,6 +867,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'moneybag'],
   )
+
 
 
 
