@@ -651,16 +651,13 @@ def process_active_trades():
 # 📋 GENERATE & SEND REPORT
 # =========================================================
 
-import time
 from datetime import datetime
+import time
 import requests
 
 
-# GitHub Actions Runner Optimized High/Low Fetcher
-def fetch_trade_period_high_low(symbol, start_ts_str):
-  if not start_ts_str:
-    return None, None
-
+# Timezone-Independent High/Low Fetcher
+def fetch_trade_period_high_low(symbol, open_duration_minutes):
   try:
     clean_symbol = (
         str(symbol)
@@ -671,36 +668,41 @@ def fetch_trade_period_high_low(symbol, start_ts_str):
         .upper()
     )
 
-    # Parse Start Time
-    dt = datetime.strptime(str(start_ts_str), '%Y-%m-%d %H:%M:%S')
-    start_ms = int(dt.timestamp() * 1000)
+    # Duration ke hisab se kitni 15m candles chahiye
+    needed_candles = int((open_duration_minutes // 15) + 4)
+    needed_candles = min(max(needed_candles, 5), 1000)
 
     headers = {'User-Agent': 'Mozilla/5.0'}
 
-    # Strategy 1: Fetch Aggregate Trades from trade start time (Lightweight & Unblocked)
-    url = 'https://fapi.binance.com/fapi/v1/aggTrades'
-    params = {'symbol': clean_symbol, 'startTime': start_ms, 'limit': 1000}
+    # Public Binance Klines without Timezone Dependency
+    url = 'https://fapi.binance.com/fapi/v1/klines'
+    params = {
+        'symbol': clean_symbol,
+        'interval': '15m',
+        'limit': needed_candles,
+    }
 
-    res = requests.get(url, params=params, headers=headers, timeout=6)
+    res = requests.get(url, params=params, headers=headers, timeout=5)
 
     if res.status_code == 200:
-      trades = res.json()
-      if trades and isinstance(trades, list):
-        prices = [float(t['p']) for t in trades]
-        return max(prices), min(prices)
+      klines = res.json()
+      if klines:
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        return max(highs), min(lows)
 
-    # Strategy 2: Fallback to Bybit Public Ticker / Klines
+    # Fallback to Bybit
     bybit_url = 'https://api.bybit.com/v5/market/kline'
     bybit_params = {
         'category': 'linear',
         'symbol': clean_symbol,
-        'interval': '60',
-        'limit': 24,
+        'interval': '15',
+        'limit': needed_candles,
     }
-
     res_bybit = requests.get(
-        bybit_url, params=bybit_params, headers=headers, timeout=6
+        bybit_url, params=bybit_params, headers=headers, timeout=5
     )
+
     if res_bybit.status_code == 200:
       data = res_bybit.json()
       klines = data.get('result', {}).get('list', [])
@@ -710,7 +712,7 @@ def fetch_trade_period_high_low(symbol, start_ts_str):
         return max(highs), min(lows)
 
   except Exception as e:
-    print(f'⚠️ AggTrades High/Low Fetch Error for {symbol}: {e}')
+    print(f'⚠️ High/Low Fetch Error for {symbol}: {e}')
 
   return None, None
 
@@ -809,12 +811,15 @@ def generate_and_send_report():
     float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
     total_floating_pnl += float_pnl
 
+    # Duration in Minutes Calculation
+    open_duration_minutes = 60
     trade_life_str = '0m'
     if trade_ts:
       try:
         t_dt = datetime.strptime(str(trade_ts), '%Y-%m-%d %H:%M:%S')
         t_diff = int((now_dt - t_dt).total_seconds())
         if t_diff > 0:
+          open_duration_minutes = t_diff // 60
           t_days = t_diff // 86400
           t_rem = t_diff % 86400
           t_hours = t_rem // 3600
@@ -830,10 +835,12 @@ def generate_and_send_report():
       except Exception as e:
         print(f'⚠️ Trade life calculation error: {e}')
 
-    # Fetch High/Low via AggTrades
-    period_high, period_low = fetch_trade_period_high_low(symbol, trade_ts)
+    # Fetch High/Low based on Open Minutes
+    period_high, period_low = fetch_trade_period_high_low(
+        symbol, open_duration_minutes
+    )
 
-    # Absolute Safety Guard: Avoid None
+    # Fallback Guard
     if period_high is None:
       period_high = max(entry_p, live_p)
     if period_low is None:
@@ -900,7 +907,7 @@ def generate_and_send_report():
 
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
-  # 📩 ACTIVE TRADES AUDIT
+  # 📩 STEP 1: ACTIVE TRADES NOTIFICATION
   msg1 = f'⚡ ACTIVE POSITIONS RISK AUDIT ({len(active_positions_details)})\n'
   msg1 += '═══════════════════════════════════\n'
 
@@ -934,7 +941,7 @@ def generate_and_send_report():
 
   time.sleep(2)
 
-  # 📩 PORTFOLIO REPORT
+  # 📩 STEP 2: PORTFOLIO AUDIT REPORT
   msg2 = '🏛️ PORTFOLIO EXECUTIVE AUDIT REPORT\n'
   msg2 += '═══════════════════════════════════\n'
   msg2 += f'⏱️ System Age     : {duration_str}\n'
@@ -971,6 +978,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
+
 
 
 
