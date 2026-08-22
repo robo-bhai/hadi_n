@@ -750,7 +750,6 @@ def generate_and_send_report():
     float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
     total_floating_pnl += float_pnl
 
-    # Duration & High/Low via Internal Kline Engine
     trade_life_str = '0m'
     period_high = max(entry_p, live_p)
     period_low = min(entry_p, live_p)
@@ -782,31 +781,26 @@ def generate_and_send_report():
       except Exception as e:
         print(f'⚠️ High/Low extraction error for {symbol}: {e}')
 
-    # 📊 Max % movement towards SL & TP Calculation
     sl_drawdown_pct = 0.0
     tp_progress_pct = 0.0
 
     if direction == 'LONG':
-      # Downward move towards SL
       if sl_p and entry_p > sl_p:
         max_down = entry_p - period_low
         total_sl_dist = entry_p - sl_p
         sl_drawdown_pct = max(0.0, (max_down / total_sl_dist) * 100)
 
-      # Upward move towards TP1
       if tp1_p and tp1_p > entry_p:
         max_up = period_high - entry_p
         total_tp_dist = tp1_p - entry_p
         tp_progress_pct = max(0.0, (max_up / total_tp_dist) * 100)
 
-    else:  # SHORT
-      # Upward move towards SL (For Short, High is danger)
+    else:
       if sl_p and sl_p > entry_p:
         max_up = period_high - entry_p
         total_sl_dist = sl_p - entry_p
         sl_drawdown_pct = max(0.0, (max_up / total_sl_dist) * 100)
 
-      # Downward move towards TP1 (For Short, Low is profit)
       if tp1_p and entry_p > tp1_p:
         max_down = entry_p - period_low
         total_tp_dist = entry_p - tp1_p
@@ -877,47 +871,61 @@ def generate_and_send_report():
 
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
-  # 📩 STEP 1: ACTIVE TRADES NOTIFICATION
-  msg1 = f'⚡ ACTIVE POSITIONS RISK AUDIT ({len(active_positions_details)})\n'
-  msg1 += '═══════════════════════════════════\n'
+  # 📩 STEP 1: ACTIVE TRADES NOTIFICATIONS (SPLIT BY 2 TRADES PER MESSAGE)
+  total_active = len(active_positions_details)
 
-  if not active_positions_details:
+  if total_active == 0:
+    msg1 = '⚡ ACTIVE POSITIONS RISK AUDIT (0)\n'
+    msg1 += '═══════════════════════════════════\n'
     msg1 += '😴 No active positions currently open.\n'
+    send_ntfy_notification(
+        '⚡ Active Positions (0)', msg1, tags=['zap', 'briefcase']
+    )
   else:
-    for pos in active_positions_details:
-      direction_icon = '🟢' if pos['direction'] == 'LONG' else '🔴'
-      pnl_icon = '🟢' if pos['float_pnl'] >= 0 else '🔻'
+    chunk_size = 2
+    chunks = [
+        active_positions_details[i : i + chunk_size]
+        for i in range(0, total_active, chunk_size)
+    ]
+    total_parts = len(chunks)
 
-      msg1 += (
-          f"{direction_icon} {pos['symbol']} | {pos['direction']}"
-          f" {pos['leverage']}x\n"
-      )
-      msg1 += f"• Open Duration: ⏱️ {pos['trade_life']}\n"
-      msg1 += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
-      msg1 += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
-      msg1 += (
-          f"• Stop Loss    : 🛑 ${fmt_p(pos['sl_p'])} (max down:"
-          f" {pos['sl_drawdown_pct']:.1f}%)\n"
-      )
-      msg1 += (
-          f"• Take Profit  : 🎯 ${fmt_p(pos['tp1_p'])} (max up:"
-          f" {pos['tp_progress_pct']:.1f}%)\n"
-      )
-      msg1 += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
-      msg1 += f"• Period Range : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
-      msg1 += (
-          f"• Dynamic PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
-          f" ({pos['float_pnl_pct']:+.2f}%)\n"
-      )
-      msg1 += '-----------------------------------\n'
+    for idx, chunk in enumerate(chunks, 1):
+      msg = f'⚡ ACTIVE POSITIONS AUDIT [{idx}/{total_parts}]\n'
+      msg += '═══════════════════════════════════\n'
 
-  send_ntfy_notification(
-      f'⚡ Active Positions ({len(active_positions_details)})',
-      msg1,
-      tags=['zap', 'briefcase'],
-  )
+      for pos in chunk:
+        direction_icon = '🟢' if pos['direction'] == 'LONG' else '🔴'
+        pnl_icon = '🟢' if pos['float_pnl'] >= 0 else '🔻'
 
-  time.sleep(2)
+        msg += (
+            f"{direction_icon} {pos['symbol']} | {pos['direction']}"
+            f" {pos['leverage']}x\n"
+        )
+        msg += f"• Open Duration: ⏱️ {pos['trade_life']}\n"
+        msg += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
+        msg += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
+        msg += (
+            f"• Stop Loss    : 🛑 ${fmt_p(pos['sl_p'])} (max down:"
+            f" {pos['sl_drawdown_pct']:.1f}%)\n"
+        )
+        msg += (
+            f"• Take Profit  : 🎯 ${fmt_p(pos['tp1_p'])} (max up:"
+            f" {pos['tp_progress_pct']:.1f}%)\n"
+        )
+        msg += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
+        msg += f"• Period Range : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
+        msg += (
+            f"• Dynamic PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
+            f" ({pos['float_pnl_pct']:+.2f}%)\n"
+        )
+        msg += '-----------------------------------\n'
+
+      send_ntfy_notification(
+          f'⚡ Active Positions ({idx}/{total_parts})',
+          msg,
+          tags=['zap', 'briefcase'],
+      )
+      time.sleep(1.5)
 
   # 📩 STEP 2: PORTFOLIO AUDIT REPORT
   msg2 = '🏛️ PORTFOLIO EXECUTIVE AUDIT REPORT\n'
@@ -956,6 +964,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
+
 
 
 
