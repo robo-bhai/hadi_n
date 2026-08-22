@@ -655,277 +655,323 @@ import time
 from datetime import datetime
 import requests
 
-# GitHub Actions Safe - Zero-Fail Period High/Low Fetcher
+
+# GitHub Actions Runner Optimized High/Low Fetcher
 def fetch_trade_period_high_low(symbol, start_ts_str):
-    if not start_ts_str:
-        return None, None
-
-    try:
-        clean_symbol = str(symbol).replace('/', '').replace('-', '').replace(':', '').strip().upper()
-        
-        # Parse DB timestamp to seconds
-        dt = datetime.strptime(str(start_ts_str), '%Y-%m-%d %H:%M:%S')
-        start_sec = dt.timestamp()
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-
-        # Query last 100 candles (15m * 100 = 25 Hours history)
-        # 1. Bybit V5 Linear API (GitHub Actions Runner Friendly)
-        bybit_url = "https://api.bybit.com/v5/market/kline"
-        bybit_params = {
-            'category': 'linear',
-            'symbol': clean_symbol,
-            'interval': '15',
-            'limit': 100
-        }
-
-        res = requests.get(bybit_url, params=bybit_params, headers=headers, timeout=5)
-
-        if res.status_code == 200:
-            data = res.json()
-            klines = data.get('result', {}).get('list', [])
-            
-            # Bybit response format: [startTime, open, high, low, close, volume, turnover]
-            valid_highs = []
-            valid_lows = []
-
-            for k in klines:
-                candle_ts_sec = float(k[0]) / 1000.0
-                # Filter candles that occurred AFTER or DURING trade creation
-                if candle_ts_sec >= (start_sec - 900):  # Include entry candle (15m buffer)
-                    valid_highs.append(float(k[2]))
-                    valid_lows.append(float(k[3]))
-
-            if valid_highs and valid_lows:
-                return max(valid_highs), min(valid_lows)
-
-        # 2. Backup: Binance Futures API without startTime parameter
-        fapi_url = "https://fapi.binance.com/fapi/v1/klines"
-        params = {
-            'symbol': clean_symbol,
-            'interval': '15m',
-            'limit': 100
-        }
-        res_binance = requests.get(fapi_url, params=params, headers=headers, timeout=5)
-
-        if res_binance.status_code == 200:
-            klines = res_binance.json()
-            valid_highs = []
-            valid_lows = []
-
-            for k in klines:
-                candle_ts_sec = float(k[0]) / 1000.0
-                if candle_ts_sec >= (start_sec - 900):
-                    valid_highs.append(float(k[2]))
-                    valid_lows.append(float(k[3]))
-
-            if valid_highs and valid_lows:
-                return max(valid_highs), min(valid_lows)
-
-    except Exception as e:
-        print(f"⚠️ High/Low Calculation Error for {symbol}: {e}")
-
+  if not start_ts_str:
     return None, None
+
+  try:
+    clean_symbol = (
+        str(symbol)
+        .replace('/', '')
+        .replace('-', '')
+        .replace(':', '')
+        .strip()
+        .upper()
+    )
+
+    # Parse Start Time
+    dt = datetime.strptime(str(start_ts_str), '%Y-%m-%d %H:%M:%S')
+    start_ms = int(dt.timestamp() * 1000)
+
+    headers = {'User-Agent': 'Mozilla/5.0'}
+
+    # Strategy 1: Fetch Aggregate Trades from trade start time (Lightweight & Unblocked)
+    url = 'https://fapi.binance.com/fapi/v1/aggTrades'
+    params = {'symbol': clean_symbol, 'startTime': start_ms, 'limit': 1000}
+
+    res = requests.get(url, params=params, headers=headers, timeout=6)
+
+    if res.status_code == 200:
+      trades = res.json()
+      if trades and isinstance(trades, list):
+        prices = [float(t['p']) for t in trades]
+        return max(prices), min(prices)
+
+    # Strategy 2: Fallback to Bybit Public Ticker / Klines
+    bybit_url = 'https://api.bybit.com/v5/market/kline'
+    bybit_params = {
+        'category': 'linear',
+        'symbol': clean_symbol,
+        'interval': '60',
+        'limit': 24,
+    }
+
+    res_bybit = requests.get(
+        bybit_url, params=bybit_params, headers=headers, timeout=6
+    )
+    if res_bybit.status_code == 200:
+      data = res_bybit.json()
+      klines = data.get('result', {}).get('list', [])
+      if klines:
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        return max(highs), min(lows)
+
+  except Exception as e:
+    print(f'⚠️ AggTrades High/Low Fetch Error for {symbol}: {e}')
+
+  return None, None
 
 
 def generate_and_send_report():
-    auto_migrate_db()
-    process_active_trades()
+  auto_migrate_db()
+  process_active_trades()
 
-    conn, db_type = get_db_connection()
-    cursor = conn.cursor()
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
 
-    cursor.execute("SELECT total_capital, available_capital, frozen_margin FROM portfolio WHERE id = 1")
-    port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
-    base_total_capital, avail_capital, frozen_margin = port_row
+  cursor.execute(
+      'SELECT total_capital, available_capital, frozen_margin FROM portfolio'
+      ' WHERE id = 1'
+  )
+  port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
+  base_total_capital, avail_capital, frozen_margin = port_row
 
-    # System Active Duration Calculation
-    cursor.execute("SELECT MIN(timestamp) FROM trades")
-    first_trade_row = cursor.fetchone()
+  cursor.execute('SELECT MIN(timestamp) FROM trades')
+  first_trade_row = cursor.fetchone()
 
-    duration_str = "0d 0h 0m"
-    if first_trade_row and first_trade_row[0]:
-        try:
-            first_ts_str = str(first_trade_row[0])
-            first_dt = datetime.strptime(first_ts_str, "%Y-%m-%d %H:%M:%S")
-            now_dt = datetime.now()
+  duration_str = '0d 0h 0m'
+  if first_trade_row and first_trade_row[0]:
+    try:
+      first_ts_str = str(first_trade_row[0])
+      first_dt = datetime.strptime(first_ts_str, '%Y-%m-%d %H:%M:%S')
+      now_dt = datetime.now()
 
-            diff_seconds = int((now_dt - first_dt).total_seconds())
-            if diff_seconds > 0:
-                months = diff_seconds // (30 * 86400)
-                rem_sec = diff_seconds % (30 * 86400)
-                days = rem_sec // 86400
-                rem_sec %= 86400
-                hours = rem_sec // 3600
-                rem_sec %= 3600
-                minutes = rem_sec // 60
+      diff_seconds = int((now_dt - first_dt).total_seconds())
+      if diff_seconds > 0:
+        months = diff_seconds // (30 * 86400)
+        rem_sec = diff_seconds % (30 * 86400)
+        days = rem_sec // 86400
+        rem_sec %= 86400
+        hours = rem_sec // 3600
+        rem_sec %= 3600
+        minutes = rem_sec // 60
 
-                parts = []
-                if months > 0: parts.append(f"{months}mo")
-                if days > 0 or months > 0: parts.append(f"{days}d")
-                if hours > 0 or days > 0 or months > 0: parts.append(f"{hours}h")
-                parts.append(f"{minutes}m")
-                duration_str = " ".join(parts)
-        except Exception as e:
-            print(f"⚠️ Duration parsing error: {e}")
+        parts = []
+        if months > 0:
+          parts.append(f'{months}mo')
+        if days > 0 or months > 0:
+          parts.append(f'{days}d')
+        if hours > 0 or days > 0 or months > 0:
+          parts.append(f'{hours}h')
+        parts.append(f'{minutes}m')
+        duration_str = ' '.join(parts)
+    except Exception as e:
+      print(f'⚠️ Duration parsing error: {e}')
 
-    cursor.execute("SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, margin_frozen, pos_value, leverage, status, timestamp FROM trades WHERE status = 'ACTIVE' ORDER BY id DESC")
-    running_trades = cursor.fetchall()
+  cursor.execute(
+      'SELECT id, symbol, direction, entry_price, sl_price, tp1_price,'
+      ' tp2_price, margin_frozen, pos_value, leverage, status, timestamp FROM'
+      " trades WHERE status = 'ACTIVE' ORDER BY id DESC"
+  )
+  running_trades = cursor.fetchall()
 
-    total_floating_pnl = 0.0
-    active_positions_details = []
+  total_floating_pnl = 0.0
+  active_positions_details = []
 
-    def fmt_p(p):
-        return f"{p:.6f}".rstrip('0').rstrip('.') if p and p < 1 else f"{p:.2f}" if p else "0.00"
+  def fmt_p(p):
+    return (
+        f'{p:.6f}'.rstrip('0').rstrip('.')
+        if p and p < 1
+        else f'{p:.2f}'
+        if p
+        else '0.00'
+    )
 
-    now_dt = datetime.now()
+  now_dt = datetime.now()
 
-    for r in running_trades:
-        t_id, symbol, direction, entry_p, sl_p, tp1_p, tp2_p, margin, pos_val, lev, status, trade_ts = r
+  for r in running_trades:
+    (
+        t_id,
+        symbol,
+        direction,
+        entry_p,
+        sl_p,
+        tp1_p,
+        tp2_p,
+        margin,
+        pos_val,
+        lev,
+        status,
+        trade_ts,
+    ) = r
 
-        fetched_live = fetch_live_price(symbol)
-        live_p = fetched_live if fetched_live is not None else entry_p
+    fetched_live = fetch_live_price(symbol)
+    live_p = fetched_live if fetched_live is not None else entry_p
 
-        if direction == 'LONG':
-            float_pnl = pos_val * ((live_p - entry_p) / entry_p)
-        else:
-            float_pnl = pos_val * ((entry_p - live_p) / entry_p)
-
-        float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
-        total_floating_pnl += float_pnl
-
-        # Duration Logic
-        trade_life_str = "0m"
-        if trade_ts:
-            try:
-                t_dt = datetime.strptime(str(trade_ts), "%Y-%m-%d %H:%M:%S")
-                t_diff = int((now_dt - t_dt).total_seconds())
-                if t_diff > 0:
-                    t_days = t_diff // 86400
-                    t_rem = t_diff % 86400
-                    t_hours = t_rem // 3600
-                    t_mins = (t_rem % 3600) // 60
-
-                    t_parts = []
-                    if t_days > 0: t_parts.append(f"{t_days}d")
-                    if t_hours > 0 or t_days > 0: t_parts.append(f"{t_hours}h")
-                    t_parts.append(f"{t_mins}m")
-                    trade_life_str = " ".join(t_parts)
-            except Exception as e:
-                print(f"⚠️ Trade life calculation error: {e}")
-
-        # Fetch High/Low
-        period_high, period_low = fetch_trade_period_high_low(symbol, trade_ts)
-
-        # Fallback safeguard
-        if period_high is None: period_high = max(entry_p, live_p)
-        if period_low is None: period_low = min(entry_p, live_p)
-
-        active_positions_details.append({
-            'symbol': symbol,
-            'direction': direction,
-            'margin': margin,
-            'leverage': lev,
-            'pos_val': pos_val,
-            'entry_p': entry_p,
-            'live_p': live_p,
-            'float_pnl': float_pnl,
-            'float_pnl_pct': float_pnl_pct,
-            'trade_life': trade_life_str,
-            'period_high': period_high,
-            'period_low': period_low
-        })
-
-    live_total_balance = base_total_capital + total_floating_pnl
-
-    cursor.execute("SELECT status, pnl FROM trades WHERE status != 'ACTIVE'")
-    closed_trades = cursor.fetchall()
-
-    closed_count = len(closed_trades)
-    closed_realized_pnl = sum((t[1] if t[1] is not None else 0.0) for t in closed_trades)
-
-    winning_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] > 0]
-    losing_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] < 0]
-
-    winning_pnl = sum(winning_trades_pnl)
-    losing_pnl = abs(sum(losing_trades_pnl))
-
-    win_count = len(winning_trades_pnl)
-    loss_count = len(losing_trades_pnl)
-
-    win_ratio = (win_count / closed_count * 100) if closed_count > 0 else 0.0
-    avg_win_trade = (winning_pnl / win_count) if win_count > 0 else 0.0
-    avg_loss_trade = (losing_pnl / loss_count) if loss_count > 0 else 0.0
-
-    if losing_pnl > 0:
-        profit_factor = winning_pnl / losing_pnl
-        pf_str = f"{profit_factor:.2f}"
+    if direction == 'LONG':
+      float_pnl = pos_val * ((live_p - entry_p) / entry_p)
     else:
-        pf_str = f"{winning_pnl:.2f}" if winning_pnl > 0 else "0.00"
+      float_pnl = pos_val * ((entry_p - live_p) / entry_p)
 
-    initial_capital = base_total_capital - closed_realized_pnl
-    all_time_roi = ((closed_realized_pnl / initial_capital * 100)) if initial_capital > 0 else 0.0
+    float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
+    total_floating_pnl += float_pnl
 
-    cap_utilization = (frozen_margin / base_total_capital * 100) if base_total_capital > 0 else 0.0
+    trade_life_str = '0m'
+    if trade_ts:
+      try:
+        t_dt = datetime.strptime(str(trade_ts), '%Y-%m-%d %H:%M:%S')
+        t_diff = int((now_dt - t_dt).total_seconds())
+        if t_diff > 0:
+          t_days = t_diff // 86400
+          t_rem = t_diff % 86400
+          t_hours = t_rem // 3600
+          t_mins = (t_rem % 3600) // 60
 
-    conn.close()
+          t_parts = []
+          if t_days > 0:
+            t_parts.append(f'{t_days}d')
+          if t_hours > 0 or t_days > 0:
+            t_parts.append(f'{t_hours}h')
+          t_parts.append(f'{t_mins}m')
+          trade_life_str = ' '.join(t_parts)
+      except Exception as e:
+        print(f'⚠️ Trade life calculation error: {e}')
 
-    pnl_sign = "+" if total_floating_pnl >= 0 else ""
+    # Fetch High/Low via AggTrades
+    period_high, period_low = fetch_trade_period_high_low(symbol, trade_ts)
 
-    # 📩 ACTIVE TRADES REPORT
-    msg1 = f"⚡ ACTIVE POSITIONS RISK AUDIT ({len(active_positions_details)})\n"
-    msg1 += "═══════════════════════════════════\n"
+    # Absolute Safety Guard: Avoid None
+    if period_high is None:
+      period_high = max(entry_p, live_p)
+    if period_low is None:
+      period_low = min(entry_p, live_p)
 
-    if not active_positions_details:
-        msg1 += "😴 No active positions currently open.\n"
-    else:
-        for pos in active_positions_details:
-            direction_icon = "🟢" if pos['direction'] == 'LONG' else "🔴"
-            pnl_icon = "🟢" if pos['float_pnl'] >= 0 else "🔻"
+    active_positions_details.append({
+        'symbol': symbol,
+        'direction': direction,
+        'margin': margin,
+        'leverage': lev,
+        'pos_val': pos_val,
+        'entry_p': entry_p,
+        'live_p': live_p,
+        'float_pnl': float_pnl,
+        'float_pnl_pct': float_pnl_pct,
+        'trade_life': trade_life_str,
+        'period_high': period_high,
+        'period_low': period_low,
+    })
 
-            msg1 += f"{direction_icon} {pos['symbol']} | {pos['direction']} {pos['leverage']}x\n"
-            msg1 += f"• Open Duration: ⏱️ {pos['trade_life']}\n"
-            msg1 += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
-            msg1 += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
-            msg1 += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
-            msg1 += f"• Period Range : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
-            msg1 += f"• Dynamic PnL  : {pnl_icon} ${pos['float_pnl']:+.2f} ({pos['float_pnl_pct']:+.2f}%)\n"
-            msg1 += "-----------------------------------\n"
+  live_total_balance = base_total_capital + total_floating_pnl
 
-    send_ntfy_notification(f"⚡ Active Positions ({len(active_positions_details)})", msg1, tags=["zap", "briefcase"])
+  cursor.execute("SELECT status, pnl FROM trades WHERE status != 'ACTIVE'")
+  closed_trades = cursor.fetchall()
 
-    time.sleep(2)
+  closed_count = len(closed_trades)
+  closed_realized_pnl = sum(
+      (t[1] if t[1] is not None else 0.0) for t in closed_trades
+  )
 
-    # 📩 PORTFOLIO REPORT
-    msg2 = "🏛️ PORTFOLIO EXECUTIVE AUDIT REPORT\n"
-    msg2 += "═══════════════════════════════════\n"
-    msg2 += f"⏱️ System Age     : {duration_str}\n"
-    msg2 += f"📅 Audit Time     : {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}\n"
-    msg2 += "───────────────────────────────────\n\n"
+  winning_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] > 0]
+  losing_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] < 0]
 
-    msg2 += "💵 ACCOUNT CAPITAL BALANCE\n"
-    msg2 += "───────────────────────────────────\n"
-    msg2 += f"💎 Total Equity   : ${live_total_balance:.2f} USDT\n"
-    msg2 += f"🏦 Base Capital   : ${base_total_capital:.2f} USDT\n"
-    msg2 += f"🟢 Available Cash : ${avail_capital:.2f} USDT\n"
-    msg2 += f"🔒 Margin Frozen  : ${frozen_margin:.2f} USDT\n"
-    msg2 += f"⚡ Margin Usage   : {cap_utilization:.1f}%\n"
-    msg2 += f"📈 Floating PnL   : {pnl_sign}${total_floating_pnl:.2f} USDT\n"
-    msg2 += "───────────────────────────────────\n\n"
+  winning_pnl = sum(winning_trades_pnl)
+  losing_pnl = abs(sum(losing_trades_pnl))
 
-    msg2 += f"📊 PERFORMANCE & RISK METRICS ({closed_count})\n"
-    msg2 += "───────────────────────────────────\n"
-    msg2 += f"💰 Net Realized PnL : ${closed_realized_pnl:+.2f} USDT\n"
-    msg2 += f"🎯 Cumulative ROI  : {all_time_roi:+.2f}%\n"
-    msg2 += f"🏆 System Win Rate  : {win_ratio:.1f}% ({win_count}W/{loss_count}L)\n"
-    msg2 += f"⚖️ Profit Factor    : {pf_str}\n"
-    msg2 += f"🟢 Avg Win Trade    : +${avg_win_trade:.2f} USDT\n"
-    msg2 += f"🔴 Avg Loss Trade   : -${avg_loss_trade:.2f} USDT\n"
-    msg2 += "═══════════════════════════════════"
+  win_count = len(winning_trades_pnl)
+  loss_count = len(losing_trades_pnl)
 
-    send_ntfy_notification("📊 Portfolio Audit Report", msg2, tags=["chart_with_upwards_trend", "briefcase"])
+  win_ratio = (win_count / closed_count * 100) if closed_count > 0 else 0.0
+  avg_win_trade = (winning_pnl / win_count) if win_count > 0 else 0.0
+  avg_loss_trade = (losing_pnl / loss_count) if loss_count > 0 else 0.0
+
+  if losing_pnl > 0:
+    profit_factor = winning_pnl / losing_pnl
+    pf_str = f'{profit_factor:.2f}'
+  else:
+    pf_str = f'{winning_pnl:.2f}' if winning_pnl > 0 else '0.00'
+
+  initial_capital = base_total_capital - closed_realized_pnl
+  all_time_roi = (
+      (closed_realized_pnl / initial_capital * 100)
+      if initial_capital > 0
+      else 0.0
+  )
+
+  cap_utilization = (
+      (frozen_margin / base_total_capital * 100)
+      if base_total_capital > 0
+      else 0.0
+  )
+
+  conn.close()
+
+  pnl_sign = '+' if total_floating_pnl >= 0 else ''
+
+  # 📩 ACTIVE TRADES AUDIT
+  msg1 = f'⚡ ACTIVE POSITIONS RISK AUDIT ({len(active_positions_details)})\n'
+  msg1 += '═══════════════════════════════════\n'
+
+  if not active_positions_details:
+    msg1 += '😴 No active positions currently open.\n'
+  else:
+    for pos in active_positions_details:
+      direction_icon = '🟢' if pos['direction'] == 'LONG' else '🔴'
+      pnl_icon = '🟢' if pos['float_pnl'] >= 0 else '🔻'
+
+      msg1 += (
+          f"{direction_icon} {pos['symbol']} | {pos['direction']}"
+          f" {pos['leverage']}x\n"
+      )
+      msg1 += f"• Open Duration: ⏱️ {pos['trade_life']}\n"
+      msg1 += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
+      msg1 += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
+      msg1 += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
+      msg1 += f"• Period Range : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
+      msg1 += (
+          f"• Dynamic PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
+          f" ({pos['float_pnl_pct']:+.2f}%)\n"
+      )
+      msg1 += '-----------------------------------\n'
+
+  send_ntfy_notification(
+      f'⚡ Active Positions ({len(active_positions_details)})',
+      msg1,
+      tags=['zap', 'briefcase'],
+  )
+
+  time.sleep(2)
+
+  # 📩 PORTFOLIO REPORT
+  msg2 = '🏛️ PORTFOLIO EXECUTIVE AUDIT REPORT\n'
+  msg2 += '═══════════════════════════════════\n'
+  msg2 += f'⏱️ System Age     : {duration_str}\n'
+  msg2 += (
+      f'📅 Audit Time     : {datetime.now().strftime("%Y-%m-%d %H:%M UTC")}\n'
+  )
+  msg2 += '───────────────────────────────────\n\n'
+
+  msg2 += '💵 ACCOUNT CAPITAL BALANCE\n'
+  msg2 += '───────────────────────────────────\n'
+  msg2 += f'💎 Total Equity   : ${live_total_balance:.2f} USDT\n'
+  msg2 += f'🏦 Base Capital   : ${base_total_capital:.2f} USDT\n'
+  msg2 += f'🟢 Available Cash : ${avail_capital:.2f} USDT\n'
+  msg2 += f'🔒 Margin Frozen  : ${frozen_margin:.2f} USDT\n'
+  msg2 += f'⚡ Margin Usage   : {cap_utilization:.1f}%\n'
+  msg2 += f'📈 Floating PnL   : {pnl_sign}${total_floating_pnl:.2f} USDT\n'
+  msg2 += '───────────────────────────────────\n\n'
+
+  msg2 += f'📊 PERFORMANCE & RISK METRICS ({closed_count})\n'
+  msg2 += '───────────────────────────────────\n'
+  msg2 += f'💰 Net Realized PnL : ${closed_realized_pnl:+.2f} USDT\n'
+  msg2 += f'🎯 Cumulative ROI  : {all_time_roi:+.2f}%\n'
+  msg2 += (
+      f'🏆 System Win Rate  : {win_ratio:.1f}%'
+      f' ({win_count}W/{loss_count}L)\n'
+  )
+  msg2 += f'⚖️ Profit Factor    : {pf_str}\n'
+  msg2 += f'🟢 Avg Win Trade    : +${avg_win_trade:.2f} USDT\n'
+  msg2 += f'🔴 Avg Loss Trade   : -${avg_loss_trade:.2f} USDT\n'
+  msg2 += '═══════════════════════════════════'
+
+  send_ntfy_notification(
+      '📊 Portfolio Audit Report',
+      msg2,
+      tags=['chart_with_upwards_trend', 'briefcase'],
+  )
+
 
 
 
