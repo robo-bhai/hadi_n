@@ -734,52 +734,91 @@ def generate_and_send_report():
       (t[1] if t[1] is not None else 0.0) for t in closed_trades
   )
 
+  # --- Advanced Analytics (ROI, Win Ratio, Profit Factor) ---
+  winning_pnl = sum(t[1] for t in closed_trades if t[1] and t[1] > 0)
+  losing_pnl = abs(sum(t[1] for t in closed_trades if t[1] and t[1] < 0))
+  win_count = sum(1 for t in closed_trades if t[1] and t[1] > 0)
+
+  win_ratio = (win_count / closed_count * 100) if closed_count > 0 else 0.0
+
+  # Profit Factor (Co-Factor)
+  if losing_pnl > 0:
+    profit_factor = winning_pnl / losing_pnl
+    pf_str = f'{profit_factor:.2f}'
+  else:
+    pf_str = f'{winning_pnl:.2f}' if winning_pnl > 0 else '0.00'
+
+  # All Time ROI (Calculated against Starting Capital or Base Capital)
+  initial_capital = (
+      base_total_capital - closed_realized_pnl
+  )  # Est. initial capital
+  all_time_roi = (
+      (closed_realized_pnl / initial_capital * 100)
+      if initial_capital > 0
+      else 0.0
+  )
+
   conn.close()
 
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
-  msg = '📊 PORTFOLIO BREAKDOWN\n'
-  msg += '───────────────────────────\n'
-  msg += f'💎 Total Balance : ${live_total_balance:.2f} USDT (Live)\n'
-  msg += f'💵 Base Capital  : ${base_total_capital:.2f} USDT\n'
-  msg += f'🟢 Available Bal : ${avail_capital:.2f} USDT\n'
-  msg += f'🔒 Freezed Bal   : ${frozen_margin:.2f} USDT\n'
-  msg += f'📈 Floating PnL  : {pnl_sign}${total_floating_pnl:.2f} USDT\n'
-  msg += '───────────────────────────\n\n'
+  # =========================================================
+  # 📩 NOTIFICATION 1: PORTFOLIO & STATS SUMMARY
+  # =========================================================
+  msg1 = '📊 PORTFOLIO BREAKDOWN\n'
+  msg1 += '───────────────────────────\n'
+  msg1 += f'💎 Total Balance : ${live_total_balance:.2f} USDT (Live)\n'
+  msg1 += f'💵 Base Capital  : ${base_total_capital:.2f} USDT\n'
+  msg1 += f'🟢 Available Bal : ${avail_capital:.2f} USDT\n'
+  msg1 += f'🔒 Freezed Bal   : ${frozen_margin:.2f} USDT\n'
+  msg1 += f'📈 Floating PnL  : {pnl_sign}${total_floating_pnl:.2f} USDT\n'
+  msg1 += '───────────────────────────\n\n'
 
-  msg += f'🔴 CLOSED TRADES PnL ({closed_count})\n'
-  msg += '───────────────────────────\n'
-  msg += f'💰 Realized PnL  : ${closed_realized_pnl:+.2f} USDT\n'
-  msg += '───────────────────────────\n\n'
+  msg1 += f'🔴 CLOSED TRADES STATS ({closed_count})\n'
+  msg1 += '───────────────────────────\n'
+  msg1 += f'💰 Realized PnL  : ${closed_realized_pnl:+.2f} USDT\n'
+  msg1 += f'🎯 All Time ROI  : {all_time_roi:+.2f}%\n'
+  msg1 += f'🏆 Win Ratio     : {win_ratio:.1f}% ({win_count}/{closed_count})\n'
+  msg1 += f'⚖️ Profit Factor : {pf_str}\n'
+  msg1 += '───────────────────────────'
 
-  msg += f'⚡ ACTIVE TRADES ({len(active_positions_details)})\n'
-  msg += '═══════════════════════════\n'
+  send_ntfy_notification(
+      '📊 Portfolio Metrics & Stats',
+      msg1,
+      tags=['chart_with_upwards_trend', 'moneybag'],
+  )
+
+  # =========================================================
+  # 📩 NOTIFICATION 2: ACTIVE TRADES ONLY
+  # =========================================================
+  msg2 = f'⚡ ACTIVE TRADES ({len(active_positions_details)})\n'
+  msg2 += '═══════════════════════════\n'
 
   if not active_positions_details:
-    msg += '😴 No active positions currently open.\n'
+    msg2 += '😴 No active positions currently open.\n'
   else:
     for pos in active_positions_details:
       direction_icon = '🟢' if pos['direction'] == 'LONG' else '🔴'
       pnl_icon = '🟢' if pos['float_pnl'] >= 0 else '🔻'
 
-      msg += (
+      msg2 += (
           f"{direction_icon} {pos['symbol']} | {pos['direction']}"
           f" {pos['leverage']}x\n"
       )
-      msg += f"• Margin    : ${pos['margin']:.2f} USDT\n"
-      msg += f"• Entry     : ${fmt_p(pos['entry_p'])}\n"
-      msg += f"• Mark Price: ${fmt_p(pos['live_p'])}\n"
-      msg += (
+      msg2 += f"• Margin    : ${pos['margin']:.2f} USDT\n"
+      msg2 += f"• Entry     : ${fmt_p(pos['entry_p'])}\n"
+      msg2 += f"• Mark Price: ${fmt_p(pos['live_p'])}\n"
+      msg2 += (
           f"• Live PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
           f" ({pos['float_pnl_pct']:+.2f}%)\n"
       )
-      msg += '-------------------------------------------\n'
+      msg2 += '-------------------------------------------\n'
 
-  report_title = (
-      '⚡ Live Portfolio Report'
-      f' ({len(active_positions_details)} Active Trades)'
+  send_ntfy_notification(
+      f'⚡ Active Positions ({len(active_positions_details)})',
+      msg2,
+      tags=['zap', 'briefcase'],
   )
-  send_ntfy_notification(report_title, msg)
 
 
 if __name__ == '__main__':
