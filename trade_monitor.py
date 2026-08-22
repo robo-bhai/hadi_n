@@ -653,13 +653,43 @@ def process_active_trades():
 
 from datetime import datetime
 import time
+import requests
+
+
+# Helper function to fetch High/Low for the trade duration
+def fetch_trade_period_high_low(symbol, start_ts_str):
+  try:
+    # Convert DB timestamp string to milliseconds
+    dt = datetime.strptime(str(start_ts_str), '%Y-%m-%d %H:%M:%S')
+    start_ms = int(dt.timestamp() * 1000)
+
+    # Convert symbol format (e.g. BTCUSDT)
+    clean_symbol = symbol.replace('/', '').replace('-', '').upper()
+
+    url = 'https://api.binance.com/api/v3/klines'
+    params = {
+        'symbol': clean_symbol,
+        'interval': '1m',  # 1-minute candles for highest precision
+        'startTime': start_ms,
+        'limit': 1000,
+    }
+
+    res = requests.get(url, params=params, timeout=5)
+    if res.status_code == 200:
+      klines = res.json()
+      if klines:
+        # Candle high index = 2, low index = 3
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        return max(highs), min(lows)
+  except Exception as e:
+    print(f'⚠️ Error fetching High/Low for {symbol}: {e}')
+
+  return None, None
 
 
 def generate_and_send_report():
-  # Auto Check / Migration for missing column
   auto_migrate_db()
-
-  # Process Trades
   process_active_trades()
 
   conn, db_type = get_db_connection()
@@ -672,7 +702,7 @@ def generate_and_send_report():
   port_row = cursor.fetchone() or (100.0, 100.0, 0.0)
   base_total_capital, avail_capital, frozen_margin = port_row
 
-  # --- System Active Duration Calculation ---
+  # System Active Duration Calculation
   cursor.execute('SELECT MIN(timestamp) FROM trades')
   first_trade_row = cursor.fetchone()
 
@@ -684,7 +714,6 @@ def generate_and_send_report():
       now_dt = datetime.now()
 
       diff_seconds = int((now_dt - first_dt).total_seconds())
-
       if diff_seconds > 0:
         months = diff_seconds // (30 * 86400)
         rem_sec = diff_seconds % (30 * 86400)
@@ -702,15 +731,14 @@ def generate_and_send_report():
         if hours > 0 or days > 0 or months > 0:
           parts.append(f'{hours}h')
         parts.append(f'{minutes}m')
-
         duration_str = ' '.join(parts)
     except Exception as e:
       print(f'⚠️ Duration parsing error: {e}')
 
   cursor.execute(
       'SELECT id, symbol, direction, entry_price, sl_price, tp1_price,'
-      ' tp2_price, margin_frozen, pos_value, leverage, status FROM trades WHERE'
-      " status = 'ACTIVE' ORDER BY id DESC"
+      ' tp2_price, margin_frozen, pos_value, leverage, status, timestamp FROM'
+      " trades WHERE status = 'ACTIVE' ORDER BY id DESC"
   )
   running_trades = cursor.fetchall()
 
@@ -726,6 +754,8 @@ def generate_and_send_report():
         else '0.00'
     )
 
+  now_dt = datetime.now()
+
   for r in running_trades:
     (
         t_id,
@@ -739,6 +769,7 @@ def generate_and_send_report():
         pos_val,
         lev,
         status,
+        trade_ts,
     ) = r
 
     fetched_live = fetch_live_price(symbol)
@@ -752,6 +783,31 @@ def generate_and_send_report():
     float_pnl_pct = (float_pnl / margin) * 100 if margin > 0 else 0.0
     total_floating_pnl += float_pnl
 
+    # Calculate Duration
+    trade_life_str = '0m'
+    if trade_ts:
+      try:
+        t_dt = datetime.strptime(str(trade_ts), '%Y-%m-%d %H:%M:%S')
+        t_diff = int((now_dt - t_dt).total_seconds())
+        if t_diff > 0:
+          t_days = t_diff // 86400
+          t_rem = t_diff % 86400
+          t_hours = t_rem // 3600
+          t_mins = (t_rem % 3600) // 60
+
+          t_parts = []
+          if t_days > 0:
+            t_parts.append(f'{t_days}d')
+          if t_hours > 0 or t_days > 0:
+            t_parts.append(f'{t_hours}h')
+          t_parts.append(f'{t_mins}m')
+          trade_life_str = ' '.join(t_parts)
+      except Exception as e:
+        print(f'⚠️ Trade life calculation error: {e}')
+
+    # Fetch Period High / Low
+    period_high, period_low = fetch_trade_period_high_low(symbol, trade_ts)
+
     active_positions_details.append({
         'symbol': symbol,
         'direction': direction,
@@ -762,6 +818,9 @@ def generate_and_send_report():
         'live_p': live_p,
         'float_pnl': float_pnl,
         'float_pnl_pct': float_pnl_pct,
+        'trade_life': trade_life_str,
+        'period_high': period_high,
+        'period_low': period_low,
     })
 
   live_total_balance = base_total_capital + total_floating_pnl
@@ -774,7 +833,6 @@ def generate_and_send_report():
       (t[1] if t[1] is not None else 0.0) for t in closed_trades
   )
 
-  # --- Institutional Analytics ---
   winning_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] > 0]
   losing_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] < 0]
 
@@ -801,7 +859,6 @@ def generate_and_send_report():
       else 0.0
   )
 
-  # Capital Utilization Rate
   cap_utilization = (
       (frozen_margin / base_total_capital * 100)
       if base_total_capital > 0
@@ -813,7 +870,7 @@ def generate_and_send_report():
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
   # =========================================================
-  # 📩 STEP 1: ACTIVE TRADES NOTIFICATION FIRST
+  # 📩 STEP 1: ACTIVE TRADES WITH HIGH/LOW METRICS
   # =========================================================
   msg1 = f'⚡ ACTIVE POSITIONS RISK AUDIT ({len(active_positions_details)})\n'
   msg1 += '═══════════════════════════════════\n'
@@ -829,9 +886,14 @@ def generate_and_send_report():
           f"{direction_icon} {pos['symbol']} | {pos['direction']}"
           f" {pos['leverage']}x\n"
       )
+      msg1 += f"• Open Duration: ⏱️ {pos['trade_life']}\n"
       msg1 += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
       msg1 += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
       msg1 += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
+
+      if pos['period_high'] and pos['period_low']:
+        msg1 += f"• Period Range : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
+
       msg1 += (
           f"• Dynamic PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
           f" ({pos['float_pnl_pct']:+.2f}%)\n"
@@ -844,7 +906,6 @@ def generate_and_send_report():
       tags=['zap', 'briefcase'],
   )
 
-  # ⏳ Delay to maintain message delivery sequence
   time.sleep(2)
 
   # =========================================================
@@ -886,6 +947,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
+
 
 
 
