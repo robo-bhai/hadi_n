@@ -650,6 +650,9 @@ def process_active_trades():
 # =========================================================
 # 📋 GENERATE & SEND REPORT
 # =========================================================
+import time  # Top par import lazmi check kar lein
+
+
 def generate_and_send_report():
   # Auto Check / Migration for missing column
   auto_migrate_db()
@@ -759,7 +762,7 @@ def generate_and_send_report():
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
   # =========================================================
-  # 📩 NOTIFICATION 1: ACTIVE TRADES ONLY (FIRST)
+  # 📩 STEP 1: SEND ACTIVE TRADES NOTIFICATION FIRST
   # =========================================================
   msg1 = f'⚡ ACTIVE TRADES ({len(active_positions_details)})\n'
   msg1 += '═══════════════════════════\n'
@@ -790,8 +793,11 @@ def generate_and_send_report():
       tags=['zap', 'briefcase'],
   )
 
+  # ⏳ 2 Second Delay to force correct delivery order on mobile device
+  time.sleep(2)
+
   # =========================================================
-  # 📩 NOTIFICATION 2: PORTFOLIO & STATS SUMMARY (SECOND)
+  # 📩 STEP 2: SEND PORTFOLIO STATS NOTIFICATION SECOND
   # =========================================================
   msg2 = '📊 PORTFOLIO BREAKDOWN\n'
   msg2 += '───────────────────────────\n'
@@ -815,6 +821,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'moneybag'],
   )
+
 
 
 
