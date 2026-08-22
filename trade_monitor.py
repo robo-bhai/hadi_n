@@ -650,7 +650,8 @@ def process_active_trades():
 # =========================================================
 # 📋 GENERATE & SEND REPORT
 # =========================================================
-import time  # Top par import lazmi check kar lein
+
+import time  # Top par import ensure kar lein
 
 
 def generate_and_send_report():
@@ -737,12 +738,17 @@ def generate_and_send_report():
       (t[1] if t[1] is not None else 0.0) for t in closed_trades
   )
 
-  # --- Advanced Analytics (ROI, Win Ratio, Profit Factor) ---
-  winning_pnl = sum(t[1] for t in closed_trades if t[1] and t[1] > 0)
+  # --- Advanced Analytics (ROI, Win Ratio, Profit Factor, Avg Win) ---
+  winning_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] > 0]
   losing_pnl = abs(sum(t[1] for t in closed_trades if t[1] and t[1] < 0))
-  win_count = sum(1 for t in closed_trades if t[1] and t[1] > 0)
+
+  winning_pnl = sum(winning_trades_pnl)
+  win_count = len(winning_trades_pnl)
 
   win_ratio = (win_count / closed_count * 100) if closed_count > 0 else 0.0
+
+  # Average Win Amount Calculation
+  avg_win_trade = (winning_pnl / win_count) if win_count > 0 else 0.0
 
   if losing_pnl > 0:
     profit_factor = winning_pnl / losing_pnl
@@ -793,7 +799,7 @@ def generate_and_send_report():
       tags=['zap', 'briefcase'],
   )
 
-  # ⏳ 2 Second Delay to force correct delivery order on mobile device
+  # ⏳ Delay to keep order intact
   time.sleep(2)
 
   # =========================================================
@@ -813,6 +819,7 @@ def generate_and_send_report():
   msg2 += f'💰 Realized PnL  : ${closed_realized_pnl:+.2f} USDT\n'
   msg2 += f'🎯 All Time ROI  : {all_time_roi:+.2f}%\n'
   msg2 += f'🏆 Win Ratio     : {win_ratio:.1f}% ({win_count}/{closed_count})\n'
+  msg2 += f'📈 Avg Win Trade : +${avg_win_trade:.2f} USDT\n'
   msg2 += f'⚖️ Profit Factor : {pf_str}\n'
   msg2 += '───────────────────────────'
 
@@ -821,6 +828,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'moneybag'],
   )
+
 
 
 
