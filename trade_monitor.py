@@ -652,7 +652,7 @@ def process_active_trades():
 # =========================================================
 
 from datetime import datetime
-import time  # Top par import ensure kar lein
+import time
 
 
 def generate_and_send_report():
@@ -676,7 +676,7 @@ def generate_and_send_report():
   cursor.execute('SELECT MIN(timestamp) FROM trades')
   first_trade_row = cursor.fetchone()
 
-  duration_str = '0 days 0 hours'
+  duration_str = '0d 0h 0m'
   if first_trade_row and first_trade_row[0]:
     try:
       first_ts_str = str(first_trade_row[0])
@@ -688,23 +688,20 @@ def generate_and_send_report():
       if diff_seconds > 0:
         months = diff_seconds // (30 * 86400)
         rem_sec = diff_seconds % (30 * 86400)
-
         days = rem_sec // 86400
         rem_sec %= 86400
-
         hours = rem_sec // 3600
         rem_sec %= 3600
-
         minutes = rem_sec // 60
 
         parts = []
         if months > 0:
-          parts.append(f'{months} month' if months == 1 else f'{months} months')
+          parts.append(f'{months}mo')
         if days > 0 or months > 0:
-          parts.append(f'{days} day' if days == 1 else f'{days} days')
+          parts.append(f'{days}d')
         if hours > 0 or days > 0 or months > 0:
-          parts.append(f'{hours} hour' if hours == 1 else f'{hours} hours')
-        parts.append(f'{minutes} min' if minutes == 1 else f'{minutes} mins')
+          parts.append(f'{hours}h')
+        parts.append(f'{minutes}m')
 
         duration_str = ' '.join(parts)
     except Exception as e:
@@ -777,15 +774,19 @@ def generate_and_send_report():
       (t[1] if t[1] is not None else 0.0) for t in closed_trades
   )
 
-  # --- Advanced Analytics ---
+  # --- Institutional Analytics ---
   winning_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] > 0]
-  losing_pnl = abs(sum(t[1] for t in closed_trades if t[1] and t[1] < 0))
+  losing_trades_pnl = [t[1] for t in closed_trades if t[1] and t[1] < 0]
 
   winning_pnl = sum(winning_trades_pnl)
+  losing_pnl = abs(sum(losing_trades_pnl))
+
   win_count = len(winning_trades_pnl)
+  loss_count = len(losing_trades_pnl)
 
   win_ratio = (win_count / closed_count * 100) if closed_count > 0 else 0.0
   avg_win_trade = (winning_pnl / win_count) if win_count > 0 else 0.0
+  avg_loss_trade = (losing_pnl / loss_count) if loss_count > 0 else 0.0
 
   if losing_pnl > 0:
     profit_factor = winning_pnl / losing_pnl
@@ -800,15 +801,22 @@ def generate_and_send_report():
       else 0.0
   )
 
+  # Capital Utilization Rate
+  cap_utilization = (
+      (frozen_margin / base_total_capital * 100)
+      if base_total_capital > 0
+      else 0.0
+  )
+
   conn.close()
 
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
   # =========================================================
-  # 📩 STEP 1: SEND ACTIVE TRADES NOTIFICATION FIRST
+  # 📩 STEP 1: ACTIVE TRADES NOTIFICATION FIRST
   # =========================================================
-  msg1 = f'⚡ ACTIVE TRADES ({len(active_positions_details)})\n'
-  msg1 += '═══════════════════════════\n'
+  msg1 = f'⚡ ACTIVE POSITIONS RISK AUDIT ({len(active_positions_details)})\n'
+  msg1 += '═══════════════════════════════════\n'
 
   if not active_positions_details:
     msg1 += '😴 No active positions currently open.\n'
@@ -821,14 +829,14 @@ def generate_and_send_report():
           f"{direction_icon} {pos['symbol']} | {pos['direction']}"
           f" {pos['leverage']}x\n"
       )
-      msg1 += f"• Margin    : ${pos['margin']:.2f} USDT\n"
-      msg1 += f"• Entry     : ${fmt_p(pos['entry_p'])}\n"
-      msg1 += f"• Mark Price: ${fmt_p(pos['live_p'])}\n"
+      msg1 += f"• Margin Alloc : ${pos['margin']:.2f} USDT\n"
+      msg1 += f"• Entry Price  : ${fmt_p(pos['entry_p'])}\n"
+      msg1 += f"• Mark Price   : ${fmt_p(pos['live_p'])}\n"
       msg1 += (
-          f"• Live PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
+          f"• Dynamic PnL  : {pnl_icon} ${pos['float_pnl']:+.2f}"
           f" ({pos['float_pnl_pct']:+.2f}%)\n"
       )
-      msg1 += '-------------------------------------------\n'
+      msg1 += '-----------------------------------\n'
 
   send_ntfy_notification(
       f'⚡ Active Positions ({len(active_positions_details)})',
@@ -836,36 +844,47 @@ def generate_and_send_report():
       tags=['zap', 'briefcase'],
   )
 
-  # Delay for exact delivery order
+  # ⏳ Delay to maintain message delivery sequence
   time.sleep(2)
 
   # =========================================================
-  # 📩 STEP 2: SEND PORTFOLIO STATS NOTIFICATION SECOND
+  # 📩 STEP 2: PROFESSIONAL PORTFOLIO AUDIT REPORT
   # =========================================================
-  msg2 = '📊 PORTFOLIO BREAKDOWN\n'
-  msg2 += '───────────────────────────\n'
-  msg2 += f'⏳ System Runtime: {duration_str}\n'
-  msg2 += '───────────────────────────\n'
-  msg2 += f'💎 Total Balance : ${live_total_balance:.2f} USDT (Live)\n'
-  msg2 += f'💵 Base Capital  : ${base_total_capital:.2f} USDT\n'
-  msg2 += f'🟢 Available Bal : ${avail_capital:.2f} USDT\n'
-  msg2 += f'🔒 Freezed Bal   : ${frozen_margin:.2f} USDT\n'
-  msg2 += f'📈 Floating PnL  : {pnl_sign}${total_floating_pnl:.2f} USDT\n'
-  msg2 += '───────────────────────────\n\n'
+  msg2 = '🏛️ PORTFOLIO EXECUTIVE AUDIT REPORT\n'
+  msg2 += '═══════════════════════════════════\n'
+  msg2 += f'⏱️ System Age     : {duration_str}\n'
+  msg2 += (
+      f'📅 Audit Time     : {datetime.now().strftime("%Y-%m-%d %H:%M UTC")}\n'
+  )
+  msg2 += '───────────────────────────────────\n\n'
 
-  msg2 += f'🔴 CLOSED TRADES STATS ({closed_count})\n'
-  msg2 += '───────────────────────────\n'
-  msg2 += f'💰 Realized PnL  : ${closed_realized_pnl:+.2f} USDT\n'
-  msg2 += f'🎯 All Time ROI  : {all_time_roi:+.2f}%\n'
-  msg2 += f'🏆 Win Ratio     : {win_ratio:.1f}% ({win_count}/{closed_count})\n'
-  msg2 += f'📈 Avg Win Trade : +${avg_win_trade:.2f} USDT\n'
-  msg2 += f'⚖️ Profit Factor : {pf_str}\n'
-  msg2 += '───────────────────────────'
+  msg2 += '💵 ACCOUNT CAPITAL BALANCE\n'
+  msg2 += '───────────────────────────────────\n'
+  msg2 += f'💎 Total Equity   : ${live_total_balance:.2f} USDT\n'
+  msg2 += f'🏦 Base Capital   : ${base_total_capital:.2f} USDT\n'
+  msg2 += f'🟢 Available Cash : ${avail_capital:.2f} USDT\n'
+  msg2 += f'🔒 Margin Frozen  : ${frozen_margin:.2f} USDT\n'
+  msg2 += f'⚡ Margin Usage   : {cap_utilization:.1f}%\n'
+  msg2 += f'📈 Floating PnL   : {pnl_sign}${total_floating_pnl:.2f} USDT\n'
+  msg2 += '───────────────────────────────────\n\n'
+
+  msg2 += f'📊 PERFORMANCE & RISK METRICS ({closed_count})\n'
+  msg2 += '───────────────────────────────────\n'
+  msg2 += f'💰 Net Realized PnL : ${closed_realized_pnl:+.2f} USDT\n'
+  msg2 += f'🎯 Cumulative ROI  : {all_time_roi:+.2f}%\n'
+  msg2 += (
+      f'🏆 System Win Rate  : {win_ratio:.1f}%'
+      f' ({win_count}W/{loss_count}L)\n'
+  )
+  msg2 += f'⚖️ Profit Factor    : {pf_str}\n'
+  msg2 += f'🟢 Avg Win Trade    : +${avg_win_trade:.2f} USDT\n'
+  msg2 += f'🔴 Avg Loss Trade   : -${avg_loss_trade:.2f} USDT\n'
+  msg2 += '═══════════════════════════════════'
 
   send_ntfy_notification(
-      '📊 Portfolio Metrics & Stats',
+      '📊 Portfolio Audit Report',
       msg2,
-      tags=['chart_with_upwards_trend', 'moneybag'],
+      tags=['chart_with_upwards_trend', 'briefcase'],
   )
 
 
