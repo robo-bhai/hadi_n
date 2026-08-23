@@ -891,31 +891,32 @@ def generate_and_send_report():
 
     for idx, chunk in enumerate(chunks, 1):
       msg = f'⚡ ACTIVE POSITIONS AUDIT [{idx}/{total_parts}]\n'
-      msg += '═══════════════════════════════════\n'
+      msg += '═══════════════════════════════════\n\n'
 
       for pos in chunk:
         direction_icon = '🟢' if pos['direction'] == 'LONG' else '🔴'
         pnl_icon = '😍' if pos['float_pnl'] >= 0 else '🥵'
 
+        msg += '-----------------------------------\n'
         msg += (
             f"{direction_icon} {pos['symbol']} | {pos['direction']}"
             f" {pos['leverage']}x\n"
         )
-        msg += f"• Time   : ⏱️ {pos['trade_life']}\n"
-        msg += f"• Capital : 🏧 ${pos['margin']:.2f} USDT\n"
-        msg += f"• EP : 🎰 ${fmt_p(pos['entry_p'])}\n"
+        msg += f"• Time.       : ⏱️ {pos['trade_life']}\n"
+        msg += f"• Capital.   : 🏧 ${pos['margin']:.2f} USDT\n"
+        msg += f"• EP.             : 🎰 ${fmt_p(pos['entry_p'])}\n"
         msg += (
-            f"`• 🚒 SL : ${fmt_p(pos['sl_p'])} (max down:"
-            f" {pos['sl_drawdown_pct']:.1f}%)`\n"
+            f"• 🚒 SL : ${fmt_p(pos['sl_p'])} (max down:"
+            f" {pos['sl_drawdown_pct']:.1f}%)\n"
         )
         msg += (
-            f"• TP : 💵 ${fmt_p(pos['tp1_p'])} (max up:"
+            f"• TK P    : 💵 ${fmt_p(pos['tp1_p'])} (max up:"
             f" {pos['tp_progress_pct']:.1f}%)\n"
         )
-        msg += f"• Mark Price  : ${fmt_p(pos['live_p'])}\n"
-        msg += f"• Max Up/Down  : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
+        msg += f"• Live     : ${fmt_p(pos['live_p'])}\n"
+        msg += f"• Up/Down  : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
         msg += (
-            f"• Live PnL : {pnl_icon} ${pos['float_pnl']:+.2f}"
+            f"• Live PnL.    : {pnl_icon} ${pos['float_pnl']:+.2f}"
             f" ({pos['float_pnl_pct']:+.2f}%)\n"
         )
         msg += '-----------------------------------\n'
@@ -964,7 +965,6 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
-
 
 
 
