@@ -897,7 +897,7 @@ def generate_and_send_report():
         direction_icon = '🟢' if pos['direction'] == 'LONG' else '🔴'
         pnl_icon = '🟢' if pos['float_pnl'] >= 0 else '🔻'
 
-        # SL line formatted as code block for dark high-contrast style
+        # Clean SL Line without extra spaces
         sl_line = f'`🚒 SL          : ${fmt_p(pos["sl_p"])} (max down: {pos["sl_drawdown_pct"]:.1f}%)`'
 
         msg += (
@@ -964,6 +964,7 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
+
 
 
 
