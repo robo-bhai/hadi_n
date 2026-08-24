@@ -304,12 +304,31 @@ def main():
     
     print("[*] Scanning Binance Market...")
     gainers = get_top_gainers(20)
+    
+    detected_signals = []
     for ticker in gainers:
         res = analyze_coin(ticker['symbol'], ticker['priceChangePercent'])
         if res:
             print(f"[+] Signal Detected: {res['Symbol']}")
             save_or_upgrade_trade(res)
+            detected_signals.append(res['Symbol'])
             
+    # Send Scan Completion Summary Notification
+    active_count = count_active_trades()
+    scanned_count = len(gainers)
+    signals_found = len(detected_signals)
+    
+    if signals_found > 0:
+        summary_msg = f"Scan complete on {scanned_count} coins.\nSignals found ({signals_found}): {', '.join(detected_signals)}\nActive Trades: {active_count}/{MAX_ACTIVE_TRADES}"
+    else:
+        summary_msg = f"Scan complete on {scanned_count} coins.\nNo new breakout signals detected.\nActive Trades: {active_count}/{MAX_ACTIVE_TRADES}"
+
+    send_ntfy_notification(
+        title="🔍 Market Scan Completed",
+        message=summary_msg,
+        tags="white_check_mark"
+    )
+
     print("[*] Execution Completed.")
 
 if __name__ == "__main__":
