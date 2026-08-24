@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 import sqlite3
 import ssl
+import time
 import pandas as pd
 import requests
 
@@ -77,12 +78,11 @@ def get_db_connection():
 
 
 def auto_migrate_db():
-  """Checks and automatically creates missing tracking columns ('last_checked_ms', 'tp_020_hit', 'tp_050_hit') in 'trades' table."""
+  """Checks and automatically creates missing tracking columns in 'trades' table."""
   conn, db_type = get_db_connection()
   cursor = conn.cursor()
 
   try:
-    # 1. Fetch existing columns in 'trades' table
     if db_type == 'MYSQL':
       cursor.execute("""
                 SELECT COLUMN_NAME 
@@ -95,16 +95,15 @@ def auto_migrate_db():
       cursor.execute('PRAGMA table_info(trades)')
       cols = [row[1] for row in cursor.fetchall()]
 
-    # 2. Define required columns and their respective DB data types
     required_cols = {
         'last_checked_ms': (
             'BIGINT DEFAULT 0' if db_type == 'MYSQL' else 'INTEGER DEFAULT 0'
         ),
         'tp_020_hit': 'INT DEFAULT 0',
         'tp_050_hit': 'INT DEFAULT 0',
+        'is_sl_modified': 'INT DEFAULT 0',
     }
 
-    # 3. Add any column that is missing
     for col_name, col_def in required_cols.items():
       if col_name not in cols:
         print(f"🛠️ Column '{col_name}' missing. Adding automatically...")
@@ -118,18 +117,39 @@ def auto_migrate_db():
     conn.close()
 
 
-
 # =========================================================
-# 💾 DATABASE HELPER FUNCTIONS
+# 💾 DATABASE HELPER FUNCTIONS (PLACED BEFORE USAGE)
 # =========================================================
 def update_sl_in_db(trade_id, new_sl):
+  """Updates Stop Loss price and sets is_sl_modified flag to 1."""
   conn, db_type = get_db_connection()
   cursor = conn.cursor()
   ph = '%s' if db_type == 'MYSQL' else '?'
 
   cursor.execute(
-      f'UPDATE trades SET sl_price = {ph} WHERE id = {ph}',
+      f'UPDATE trades SET sl_price = {ph}, is_sl_modified = 1 WHERE id = {ph}',
       (new_sl, trade_id),
+  )
+  conn.commit()
+  conn.close()
+
+
+def update_trade_partial_in_db(trade_id, new_margin, new_pos_val, flag_col):
+  """Updates reduced position size, margin, and sets partial TP flag in DB."""
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
+  ph = '%s' if db_type == 'MYSQL' else '?'
+
+  query = (
+      f'UPDATE trades SET margin_frozen = {ph}, pos_value = {ph}, {flag_col} ='
+      f' 1 WHERE id = {ph}'
+  )
+  cursor.execute(query, (new_margin, new_pos_val, trade_id))
+
+  cursor.execute(
+      f'UPDATE portfolio SET available_capital = available_capital + {ph},'
+      f' frozen_margin = frozen_margin - {ph} WHERE id = 1',
+      (new_margin, new_margin),
   )
   conn.commit()
   conn.close()
@@ -159,7 +179,7 @@ def check_trailing_and_breakeven(trade, current_price):
   if not (is_long or is_short):
     return sl
 
-  # Calculate Current PnL in USDT based on active position size
+  # Calculate Current PnL in USDT
   current_pnl_usdt = (
       pos_val * ((current_price - entry) / entry)
       if is_long
@@ -180,7 +200,7 @@ def check_trailing_and_breakeven(trade, current_price):
     trade['margin_frozen'] = reduced_margin
     trade['pos_value'] = reduced_pos_val
     trade['tp_020_hit'] = 1
-    pos_val = reduced_pos_val  # Local variable refresh
+    pos_val = reduced_pos_val
 
     msg = (
         f'🎯 PARTIAL TP 1 HIT (+50% CLOSED)\n'
@@ -208,7 +228,7 @@ def check_trailing_and_breakeven(trade, current_price):
     trade['margin_frozen'] = reduced_margin
     trade['pos_value'] = reduced_pos_val
     trade['tp_050_hit'] = 1
-    pos_val = reduced_pos_val  # Local variable refresh
+    pos_val = reduced_pos_val
 
     msg = (
         f'🚀 PARTIAL TP 2 HIT (+50% OF REMAINING CLOSED)\n'
@@ -226,18 +246,13 @@ def check_trailing_and_breakeven(trade, current_price):
     )
 
   # -------------------------------------------------------------
-  # 🛡️ DYNAMIC TRAILING & STOP-LOSS LOCKS
+  # 🛡️ DYNAMIC TRAILING & STOP-LOSS LOCKS (FIXED ORDER: HIGHEST TO LOWEST)
   # -------------------------------------------------------------
-  # Tiers Structure: (Peak_Unrealized_PNL_Threshold, Net_Lock_Amount)
-  # Tier 1: $0.50+ Peak -> Lock +$0.45 NET (Step 4)
-  # Tier 2: $0.30+ Peak -> Lock +$0.25 NET (Step 2)
-  # Tier 3: $1.00+ Peak -> Lock +$0.60 NET (Extended Trailing)
-  tiers = [(0.50, 0.45), (0.30, 0.25), (1.00, 0.60)]
+  tiers = [(1.00, 0.60), (0.50, 0.45), (0.30, 0.25)]
 
   target_sl = sl
   locked_profit = 0.0
 
-  # Evaluate Tiers (Highest floor threshold triggers first)
   for threshold, lock_amount in tiers:
     if current_pnl_usdt >= threshold:
       target_gross = lock_amount + total_fee_usdt
@@ -249,7 +264,6 @@ def check_trailing_and_breakeven(trade, current_price):
       locked_profit = lock_amount
       break
 
-  # Check if SL needs updating
   is_sl_improved = (is_long and target_sl > sl) or (
       is_short and (sl == 0 or target_sl < sl)
   )
@@ -258,6 +272,7 @@ def check_trailing_and_breakeven(trade, current_price):
     new_sl = target_sl
     update_sl_in_db(t_id, new_sl)
     trade['sl_price'] = new_sl
+    trade['is_sl_modified'] = 1
 
     print(
         f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
@@ -283,29 +298,6 @@ def check_trailing_and_breakeven(trade, current_price):
     return new_sl
 
   return sl
-
-
-def update_trade_partial_in_db(trade_id, new_margin, new_pos_val, flag_col):
-  """Updates reduced position size, margin, and marks partial TP flag in DB."""
-  conn, db_type = get_db_connection()
-  cursor = conn.cursor()
-  ph = '%s' if db_type == 'MYSQL' else '?'
-
-  query = (
-      f'UPDATE trades SET margin_frozen = {ph}, pos_value = {ph}, {flag_col} ='
-      f' 1 WHERE id = {ph}'
-  )
-  cursor.execute(query, (new_margin, new_pos_val, trade_id))
-
-  # Release realized margin back to available capital in portfolio
-  cursor.execute(
-      f'UPDATE portfolio SET available_capital = available_capital + {ph},'
-      f' frozen_margin = frozen_margin - {ph} WHERE id = 1',
-      (new_margin, new_margin),
-  )
-  conn.commit()
-  conn.close()
-
 
 
 # =========================================================
@@ -363,6 +355,7 @@ def send_trade_event_notification(
 
   reason_map = {
       'CLOSED_SL': '🚫 STOP LOSS HIT',
+      'CLOSED_TP_MAN': '🛡️ TRAILING / MANUAL SL HIT',
       'CLOSED_TP1': '🎯 TAKE PROFIT 1 HIT',
       'CLOSED_TP2': '🚀 TAKE PROFIT 2 HIT',
       'CLOSED_24H_PROFIT': '⏳ 24H TIME EXPIRY (PROFIT)',
@@ -445,16 +438,14 @@ def fetch_live_price(symbol):
 
 
 # =========================================================
-# 🕯️ INCREMENTAL KLINES DOWNLOADER (NEW OPTIMIZED LOGIC)
+# 🕯️ INCREMENTAL KLINES DOWNLOADER
 # =========================================================
 def fetch_incremental_klines(symbol, start_time_ms):
-  """Fetches only NEW candles starting from start_time_ms to reduce API latency."""
   clean_symbol = str(symbol).strip().upper()
   all_candles = []
   current_start = start_time_ms
   now_ms = int(datetime.now().timestamp() * 1000)
 
-  # Fetch only required missing chunks
   while current_start < now_ms:
     url = f'{BINANCE_SPOT_URL}?symbol={clean_symbol}&interval=1m&startTime={current_start}&limit=1000'
     try:
@@ -502,7 +493,7 @@ def fetch_incremental_klines(symbol, start_time_ms):
 
 
 # =========================================================
-# 🔄 PROCESS ACTIVE TRADES WITH DB TIMESTAMP TRACKING
+# 🔄 PROCESS ACTIVE TRADES
 # =========================================================
 def process_active_trades():
   print('\n' + '=' * 60)
@@ -525,11 +516,10 @@ def process_active_trades():
     return
   total_cap, avail_cap, frozen_margin = port_row
 
-  # Fetch active trades including partial TP flags
   cursor.execute(
       f'SELECT id, timestamp, symbol, direction, entry_price, sl_price,'
       f' tp1_price, tp2_price, margin_frozen, pos_value, last_checked_ms,'
-      f' tp_020_hit, tp_050_hit FROM trades WHERE status = {ph}',
+      f' tp_020_hit, tp_050_hit, is_sl_modified FROM trades WHERE status = {ph}',
       ('ACTIVE',),
   )
   active_trades = cursor.fetchall()
@@ -552,6 +542,7 @@ def process_active_trades():
         last_checked_ms,
         tp_020_hit,
         tp_050_hit,
+        is_sl_modified,
     ) = trade
     print(f'\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]')
 
@@ -562,7 +553,6 @@ def process_active_trades():
       print(f'❌ Timestamp Parsing Error for Trade #{t_id}: {e}')
       continue
 
-    # Determine fetch point: Use last_checked_ms if present, otherwise trade start_ms
     fetch_from_ms = (
         last_checked_ms if (last_checked_ms and last_checked_ms > 0) else start_ms
     )
@@ -577,7 +567,6 @@ def process_active_trades():
     exit_p = 0.0
     latest_processed_ms = fetch_from_ms
 
-    # Construct trade dictionary for dynamic trailing and partial exit processing
     trade_dict = {
         'id': t_id,
         'symbol': symbol,
@@ -588,6 +577,7 @@ def process_active_trades():
         'margin_frozen': margin,
         'tp_020_hit': tp_020_hit if tp_020_hit else 0,
         'tp_050_hit': tp_050_hit if tp_050_hit else 0,
+        'is_sl_modified': is_sl_modified if is_sl_modified else 0,
     }
 
     for idx, row in df.iterrows():
@@ -604,16 +594,21 @@ def process_active_trades():
       check_p = c_high if direction == 'LONG' else c_low
       sl_p = check_trailing_and_breakeven(trade_dict, check_p)
 
-      # Refresh position references in case a partial TP was executed inside check_trailing_and_breakeven
       pos_val = trade_dict['pos_value']
       margin = trade_dict['margin_frozen']
+
+      sl_close_status = (
+          'CLOSED_TP_MAN'
+          if trade_dict.get('is_sl_modified') == 1
+          else 'CLOSED_SL'
+      )
 
       if direction == 'LONG':
         if c_close >= c_open:
           if c_low <= sl_p:
-            status = 'CLOSED_SL'
+            status = sl_close_status
             exit_p = sl_p
-            gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
+            gross_pnl = pos_val * ((sl_p - entry_p) / entry_p)
             break
           elif c_high >= tp2_p:
             status = 'CLOSED_TP2'
@@ -637,9 +632,9 @@ def process_active_trades():
             gross_pnl = pos_val * ((tp1_p - entry_p) / entry_p)
             break
           elif c_low <= sl_p:
-            status = 'CLOSED_SL'
+            status = sl_close_status
             exit_p = sl_p
-            gross_pnl = -pos_val * ((entry_p - sl_p) / entry_p)
+            gross_pnl = pos_val * ((sl_p - entry_p) / entry_p)
             break
 
         if time_elapsed_seconds >= 86400:
@@ -659,9 +654,9 @@ def process_active_trades():
       else:  # SHORT
         if c_close <= c_open:
           if c_high >= sl_p:
-            status = 'CLOSED_SL'
+            status = sl_close_status
             exit_p = sl_p
-            gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
+            gross_pnl = pos_val * ((entry_p - sl_p) / entry_p)
             break
           elif c_low <= tp2_p:
             status = 'CLOSED_TP2'
@@ -685,9 +680,9 @@ def process_active_trades():
             gross_pnl = pos_val * ((entry_p - tp1_p) / entry_p)
             break
           elif c_high >= sl_p:
-            status = 'CLOSED_SL'
+            status = sl_close_status
             exit_p = sl_p
-            gross_pnl = -pos_val * ((sl_p - entry_p) / entry_p)
+            gross_pnl = pos_val * ((entry_p - sl_p) / entry_p)
             break
 
         if time_elapsed_seconds >= 86400:
@@ -704,7 +699,6 @@ def process_active_trades():
             gross_pnl = candle_gross_pnl
             break
 
-    # Save last checked candle timestamp to DB
     cursor.execute(
         f'UPDATE trades SET last_checked_ms = {ph} WHERE id = {ph}',
         (latest_processed_ms, t_id),
@@ -754,16 +748,9 @@ def process_active_trades():
   conn.close()
 
 
-
 # =========================================================
 # 📋 GENERATE & SEND REPORT
 # =========================================================
-
-from datetime import datetime
-import time
-import requests
-
-
 def generate_and_send_report():
   auto_migrate_db()
   process_active_trades()
@@ -979,7 +966,7 @@ def generate_and_send_report():
 
   pnl_sign = '+' if total_floating_pnl >= 0 else ''
 
-  # 📩 STEP 1: ACTIVE TRADES NOTIFICATIONS (SPLIT BY 2 TRADES PER MESSAGE)
+  # 📩 ACTIVE TRADES NOTIFICATIONS
   total_active = len(active_positions_details)
 
   if total_active == 0:
@@ -1022,7 +1009,10 @@ def generate_and_send_report():
             f" {pos['tp_progress_pct']:.1f}%)\n"
         )
         msg += f"• Live     : ${fmt_p(pos['live_p'])}\n"
-        msg += f"• Up/Down  : 🔺${fmt_p(pos['period_high'])} | 🔻${fmt_p(pos['period_low'])}\n"
+        msg += (
+            '• Up/Down  :'
+            f' 🔺${fmt_p(pos["period_high"])} | 🔻${fmt_p(pos["period_low"])}\n'
+        )
         msg += (
             f"• Live PnL.    : {pnl_icon} ${pos['float_pnl']:+.2f}"
             f" ({pos['float_pnl_pct']:+.2f}%)\n"
@@ -1036,7 +1026,7 @@ def generate_and_send_report():
       )
       time.sleep(1.5)
 
-  # 📩 STEP 2: PORTFOLIO AUDIT REPORT
+  # 📩 PORTFOLIO AUDIT REPORT
   msg2 = '🏛️ PORTFOLIO EXECUTIVE AUDIT REPORT\n'
   msg2 += '═══════════════════════════════════\n'
   msg2 += f'⏱️ System Age     : {duration_str}\n'
@@ -1073,7 +1063,6 @@ def generate_and_send_report():
       msg2,
       tags=['chart_with_upwards_trend', 'briefcase'],
   )
-
 
 
 if __name__ == '__main__':
