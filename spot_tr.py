@@ -41,6 +41,11 @@ def send_ntfy_notification(title, message, tags="chart_with_upwards_trend"):
 def get_db_connection():
     if not DB_PASSWORD:
         print("[!] DB_SPOT_PASSWORD secret missing in environment.")
+        send_ntfy_notification(
+            title="Database Error",
+            message="❌ Database connection failed: DB_SPOT_PASSWORD environment variable missing.",
+            tags="x"
+        )
         return None
     
     # Connection Retry with Direct Parameter Map (Avoids DNS cache lock)
@@ -55,11 +60,25 @@ def get_db_connection():
                 sslmode="require",
                 connect_timeout=15
             )
+            # Database connected successfully notification
+            send_ntfy_notification(
+                title="Database Connected",
+                message=f"⚡ Successfully connected to PostgreSQL Database (Attempt {attempt}/3). Starting Market Scan...",
+                tags="electric_plug,white_check_mark"
+            )
             return conn
         except Exception as e:
             print(f"[!] DB Connection Retry {attempt}/3 Failed: {e}")
             time.sleep(3)
+    
+    # Connection failure notification if all 3 retries fail
+    send_ntfy_notification(
+        title="Database Connection Failed",
+        message="🚨 Failed to connect to PostgreSQL database after 3 attempts.",
+        tags="warning,x"
+    )
     return None
+
 
 def init_db():
     create_query = """
