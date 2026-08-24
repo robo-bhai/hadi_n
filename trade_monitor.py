@@ -77,35 +77,46 @@ def get_db_connection():
 
 
 def auto_migrate_db():
-  """Checks and automatically creates 'last_checked_ms' column if missing."""
+  """Checks and automatically creates missing tracking columns ('last_checked_ms', 'tp_020_hit', 'tp_050_hit') in 'trades' table."""
   conn, db_type = get_db_connection()
   cursor = conn.cursor()
 
   try:
+    # 1. Fetch existing columns in 'trades' table
     if db_type == 'MYSQL':
       cursor.execute("""
-                SELECT COUNT(*) 
+                SELECT COLUMN_NAME 
                 FROM INFORMATION_SCHEMA.COLUMNS 
                 WHERE TABLE_SCHEMA = DATABASE() 
-                  AND TABLE_NAME = 'trades' 
-                  AND COLUMN_NAME = 'last_checked_ms'
+                  AND TABLE_NAME = 'trades'
             """)
-      column_exists = cursor.fetchone()[0] > 0
+      cols = [row[0] for row in cursor.fetchall()]
     else:
       cursor.execute('PRAGMA table_info(trades)')
-      columns = [row[1] for row in cursor.fetchall()]
-      column_exists = 'last_checked_ms' in columns
+      cols = [row[1] for row in cursor.fetchall()]
 
-    if not column_exists:
-      print("🛠️ Column 'last_checked_ms' missing. Adding automatically...")
-      col_type = 'BIGINT DEFAULT 0' if db_type == 'MYSQL' else 'INTEGER DEFAULT 0'
-      cursor.execute(f'ALTER TABLE trades ADD COLUMN last_checked_ms {col_type}')
-      conn.commit()
-      print("✅ Column 'last_checked_ms' created successfully.")
+    # 2. Define required columns and their respective DB data types
+    required_cols = {
+        'last_checked_ms': (
+            'BIGINT DEFAULT 0' if db_type == 'MYSQL' else 'INTEGER DEFAULT 0'
+        ),
+        'tp_020_hit': 'INT DEFAULT 0',
+        'tp_050_hit': 'INT DEFAULT 0',
+    }
+
+    # 3. Add any column that is missing
+    for col_name, col_def in required_cols.items():
+      if col_name not in cols:
+        print(f"🛠️ Column '{col_name}' missing. Adding automatically...")
+        cursor.execute(f'ALTER TABLE trades ADD COLUMN {col_name} {col_def}')
+        conn.commit()
+        print(f"✅ Column '{col_name}' created successfully.")
+
   except Exception as e:
     print(f'⚠️ Migration check error: {e}')
   finally:
     conn.close()
+
 
 
 # =========================================================
@@ -134,6 +145,9 @@ def check_trailing_and_breakeven(trade, current_price):
   t_id = trade.get('id')
   symbol = trade.get('symbol', '')
   pos_val = trade.get('pos_value', 0.0)
+  margin = trade.get('margin_frozen', 0.0)
+  tp_020 = trade.get('tp_020_hit', 0)
+  tp_050 = trade.get('tp_050_hit', 0)
 
   if pos_val <= 0 or entry <= 0:
     return sl
@@ -145,19 +159,80 @@ def check_trailing_and_breakeven(trade, current_price):
   if not (is_long or is_short):
     return sl
 
-  # Calculate Current PnL in USDT
+  # Calculate Current PnL in USDT based on active position size
   current_pnl_usdt = (
       pos_val * ((current_price - entry) / entry)
       if is_long
       else pos_val * ((entry - current_price) / entry)
   )
 
-  # Define Profit Tiers: (Peak_Unrealized_PNL_Threshold, Net_Lock_Amount)
-  # Tier 1: $1.00+ Peak -> Lock $0.60 NET
-  # Tier 2: $0.60+ Peak -> Lock $0.35 NET
-  # Tier 3: $0.40+ Peak -> Lock $0.15 NET
-  # Tier 4: $0.28+ Peak -> Lock $0.05 NET (Early Break-Even + Fee Cover)
-  tiers = [(1.00, 0.60), (0.60, 0.35), (0.40, 0.15), (0.28, 0.05)]
+  # -------------------------------------------------------------
+  # 💥 PARTIAL TAKE PROFIT EXECUTIONS
+  # -------------------------------------------------------------
+  # Step 1: At +$0.20 PnL -> Sell 50% Position
+  if current_pnl_usdt >= 0.20 and tp_020 == 0:
+    reduced_margin = margin * 0.5
+    reduced_pos_val = pos_val * 0.5
+    update_trade_partial_in_db(
+        t_id, reduced_margin, reduced_pos_val, 'tp_020_hit'
+    )
+
+    trade['margin_frozen'] = reduced_margin
+    trade['pos_value'] = reduced_pos_val
+    trade['tp_020_hit'] = 1
+    pos_val = reduced_pos_val  # Local variable refresh
+
+    msg = (
+        f'🎯 PARTIAL TP 1 HIT (+50% CLOSED)\n'
+        '───────────────────────────\n'
+        f'📌 Symbol          : {symbol} [{direction}]\n'
+        f'💵 Realized PnL    : +$0.10 USDT\n'
+        f'🔒 Remaining Margin : ${reduced_margin:.2f} USDT\n'
+        '───────────────────────────'
+    )
+    send_ntfy_notification(
+        title=f'🎯 50% Scaled Out: {symbol}',
+        message_body=msg,
+        tags=['moneybag', 'scissors'],
+        topic=EVENT_ALERT_TOPIC,
+    )
+
+  # Step 3: At +$0.50 PnL -> Sell 50% of Remaining Position
+  if current_pnl_usdt >= 0.50 and tp_050 == 0:
+    reduced_margin = margin * 0.5
+    reduced_pos_val = pos_val * 0.5
+    update_trade_partial_in_db(
+        t_id, reduced_margin, reduced_pos_val, 'tp_050_hit'
+    )
+
+    trade['margin_frozen'] = reduced_margin
+    trade['pos_value'] = reduced_pos_val
+    trade['tp_050_hit'] = 1
+    pos_val = reduced_pos_val  # Local variable refresh
+
+    msg = (
+        f'🚀 PARTIAL TP 2 HIT (+50% OF REMAINING CLOSED)\n'
+        '───────────────────────────\n'
+        f'📌 Symbol          : {symbol} [{direction}]\n'
+        f'💵 Realized PnL    : +$0.25 USDT\n'
+        f'🔒 Remaining Margin : ${reduced_margin:.2f} USDT\n'
+        '───────────────────────────'
+    )
+    send_ntfy_notification(
+        title=f'🚀 Partial TP 2: {symbol}',
+        message_body=msg,
+        tags=['rocket', 'moneybag'],
+        topic=EVENT_ALERT_TOPIC,
+    )
+
+  # -------------------------------------------------------------
+  # 🛡️ DYNAMIC TRAILING & STOP-LOSS LOCKS
+  # -------------------------------------------------------------
+  # Tiers Structure: (Peak_Unrealized_PNL_Threshold, Net_Lock_Amount)
+  # Tier 1: $0.50+ Peak -> Lock +$0.45 NET (Step 4)
+  # Tier 2: $0.30+ Peak -> Lock +$0.25 NET (Step 2)
+  # Tier 3: $1.00+ Peak -> Lock +$0.60 NET (Extended Trailing)
+  tiers = [(0.50, 0.45), (0.30, 0.25), (1.00, 0.60)]
 
   target_sl = sl
   locked_profit = 0.0
@@ -209,6 +284,27 @@ def check_trailing_and_breakeven(trade, current_price):
 
   return sl
 
+
+def update_trade_partial_in_db(trade_id, new_margin, new_pos_val, flag_col):
+  """Updates reduced position size, margin, and marks partial TP flag in DB."""
+  conn, db_type = get_db_connection()
+  cursor = conn.cursor()
+  ph = '%s' if db_type == 'MYSQL' else '?'
+
+  query = (
+      f'UPDATE trades SET margin_frozen = {ph}, pos_value = {ph}, {flag_col} ='
+      f' 1 WHERE id = {ph}'
+  )
+  cursor.execute(query, (new_margin, new_pos_val, trade_id))
+
+  # Release realized margin back to available capital in portfolio
+  cursor.execute(
+      f'UPDATE portfolio SET available_capital = available_capital + {ph},'
+      f' frozen_margin = frozen_margin - {ph} WHERE id = 1',
+      (new_margin, new_margin),
+  )
+  conn.commit()
+  conn.close()
 
 
 
@@ -429,10 +525,11 @@ def process_active_trades():
     return
   total_cap, avail_cap, frozen_margin = port_row
 
+  # Fetch active trades including partial TP flags
   cursor.execute(
       f'SELECT id, timestamp, symbol, direction, entry_price, sl_price,'
-      f' tp1_price, tp2_price, margin_frozen, pos_value, last_checked_ms FROM'
-      f' trades WHERE status = {ph}',
+      f' tp1_price, tp2_price, margin_frozen, pos_value, last_checked_ms,'
+      f' tp_020_hit, tp_050_hit FROM trades WHERE status = {ph}',
       ('ACTIVE',),
   )
   active_trades = cursor.fetchall()
@@ -453,6 +550,8 @@ def process_active_trades():
         margin,
         pos_val,
         last_checked_ms,
+        tp_020_hit,
+        tp_050_hit,
     ) = trade
     print(f'\n📌 Evaluating Trade #{t_id} | {symbol} [{direction}]')
 
@@ -478,6 +577,7 @@ def process_active_trades():
     exit_p = 0.0
     latest_processed_ms = fetch_from_ms
 
+    # Construct trade dictionary for dynamic trailing and partial exit processing
     trade_dict = {
         'id': t_id,
         'symbol': symbol,
@@ -485,6 +585,9 @@ def process_active_trades():
         'entry_price': entry_p,
         'sl_price': sl_p,
         'pos_value': pos_val,
+        'margin_frozen': margin,
+        'tp_020_hit': tp_020_hit if tp_020_hit else 0,
+        'tp_050_hit': tp_050_hit if tp_050_hit else 0,
     }
 
     for idx, row in df.iterrows():
@@ -500,6 +603,10 @@ def process_active_trades():
 
       check_p = c_high if direction == 'LONG' else c_low
       sl_p = check_trailing_and_breakeven(trade_dict, check_p)
+
+      # Refresh position references in case a partial TP was executed inside check_trailing_and_breakeven
+      pos_val = trade_dict['pos_value']
+      margin = trade_dict['margin_frozen']
 
       if direction == 'LONG':
         if c_close >= c_open:
@@ -645,6 +752,7 @@ def process_active_trades():
       )
 
   conn.close()
+
 
 
 # =========================================================
