@@ -729,7 +729,6 @@ def generate_signal_card(symbol, direction, leverage, live_price, sl_price, tp1_
     img.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
-
 def process_trade_logic(symbol_input, base_risk_pct=1.5):
     """
     Main Trader Engine execution logic with Scalp-Optimized Dynamic Key-Level RRR (Min 1:0.3) & Strict 1% Total Risk Guard.
@@ -743,6 +742,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"💼 PORTFOLIO: Total: ${port['total']:.2f} | Available: ${port['available']:.2f} | Frozen: ${port['frozen']:.2f}")
     print(f"📊 ACTIVE TRADES IN DB: {active_count}/5")
     print("=" * 70)
+
     # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
     is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=5)
     if is_halted:
@@ -881,36 +881,43 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         score -= 15
         reasons.append(f"Long Flush Scent ({funding_rate:.4f}%) (-15)")
 
+    # Initializing status and direction variables cleanly
     trade_possible = True
     direction = "NONE"
+    status_msg = ""
 
+    # 1. Base Score Direction Check
     if score >= 58:
-        if btc_regime == "BEARISH" and symbol_input != "BTCUSDT":
-            trade_possible = False
-            status_msg = "⚠️ NO TRADE: Macro BTC Trend is BEARISH"
-        else:
-            direction = "LONG"
+        direction = "LONG"
     elif score <= 42:
-        if btc_regime == "BULLISH" and symbol_input != "BTCUSDT":
-            trade_possible = False
-            status_msg = "⚠️ NO TRADE: Macro BTC Trend is BULLISH"
-        else:
-            direction = "SHORT"
+        direction = "SHORT"
     else:
         trade_possible = False
         status_msg = "💤 NO TRADE: Score in Chop Zone (42-57)"
 
+    # 2. Strict Long-Only Guard
+    if trade_possible and direction == "SHORT":
+        trade_possible = False
+        status_msg = "🚫 SHORT TRADE BLOCKED: System is configured for LONG-ONLY trades."
+
+    # 3. Macro BTC Trend Guard
+    if trade_possible:
+        if direction == "LONG" and btc_regime == "BEARISH" and symbol_input != "BTCUSDT":
+            trade_possible = False
+            status_msg = "⚠️ NO TRADE: Macro BTC Trend is BEARISH"
+
+    # 4. Micro Timeframe Alignment & Bypass Guard
     if trade_possible:
         micro_15m = check_micro_momentum(df_15m, direction)
         micro_5m = check_micro_momentum(df_5m, direction)
 
         if not (micro_15m or micro_5m):
-            # 💡 High Quant Score Bypass Guard
+            # High Quant Score Bypass Guard
             if (direction == "LONG" and score >= 70) or (direction == "SHORT" and score <= 30):
                 print(f"⚡ High Score ({score}): Overriding Micro-Delay for Instant Execution!")
             else:
                 trade_possible = False
-                status_msg = f"⏳ NO TRADE: Waiting for Micro-Timeframe Alignment"
+                status_msg = "⏳ NO TRADE: Waiting for Micro-Timeframe Alignment"
 
     print("\n" + "=" * 70)
     print(f"📊 LIVE QUANT REPORT: [{symbol_input}] | Score: {score}/100")
@@ -920,7 +927,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     if not trade_possible:
         print(f"\n🚫 TRADE STATUS: {status_msg}\n")
-        
+
         no_trade_body = f"🪙 Pair: {symbol_input}\n"
         no_trade_body += f"📊 Quant Score: {score}/100\n"
         no_trade_body += f"💰 Current Price: ${live_price:.4f}\n"
@@ -931,7 +938,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
             no_trade_body += "💡 Confluences Evaluated:\n"
             for r in reasons:
                 no_trade_body += f"   • {r}\n"
-                
+
         send_pushbullet_notification(f"💤 [NO TRADE] {symbol_input} (Score: {score})", no_trade_body)
         return False
 
@@ -1085,7 +1092,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
     return True
-
 
 
 
