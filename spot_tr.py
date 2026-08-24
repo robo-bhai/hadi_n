@@ -1,63 +1,63 @@
 import os
+import time
 import requests
 import pandas as pd
 import numpy as np
 import psycopg2
 
 # ==========================================================
-# CONFIGURATION & GITHUB SECRETS
+# CONFIGURATION & SECRETS
 # ==========================================================
 DB_HOST = "pg-39432034-project-b71a.aivencloud.com"
 DB_PORT = "23464"
 DB_NAME = "defaultdb"
 DB_USER = "avnadmin"
-DB_PASSWORD = os.getenv("DB_SPOT_PASSWORD")  # Reads from GitHub Secrets / Env Var
 
+DB_PASSWORD = os.getenv("DB_SPOT_PASSWORD") or os.getenv("DB_PASSWORD")
 NTFY_TOPIC_URL = "https://ntfy.sh/spot_tr_99_23"
 
-# Position & Risk Rules
+# Risk & Position Limits
 INITIAL_BALANCE = 300.0
 MAX_ACTIVE_TRADES = 5
-BASE_TRADE_AMOUNT = 30.0  # $30 Initial Allocation
-RE_ENTRY_ADD_AMOUNT = 5.0 # +$5 if strong signal repeats (Max $35)
+BASE_TRADE_AMOUNT = 30.0
+RE_ENTRY_ADD_AMOUNT = 5.0
 MAX_TRADE_AMOUNT = 35.0
 
 def send_ntfy_notification(title, message, tags="chart_with_upwards_trend"):
-    """ntfy.sh topic 'spot_tr_99_23' par instant alert push karta hai."""
     try:
         requests.post(
             NTFY_TOPIC_URL,
             data=message.encode('utf-8'),
-            headers={
-                "Title": title,
-                "Tags": tags,
-                "Priority": "high"
-            },
+            headers={"Title": title, "Tags": tags, "Priority": "high"},
             timeout=10
         )
-        print(f"[+] Push notification sent: {title}")
     except Exception as e:
         print(f"[!] Notification Error: {e}")
 
 def get_db_connection():
     if not DB_PASSWORD:
-        print("[!] DB_PASSWORD environment variable / secret missing.")
+        print("[!] DB_SPOT_PASSWORD secret missing in environment.")
         return None
-    try:
-        return psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            sslmode="require"
-        )
-    except Exception as e:
-        print(f"[!] DB Connection Error: {e}")
-        return None
+    
+    # Connection Retry with Direct Parameter Map (Avoids DNS cache lock)
+    for attempt in range(1, 4):
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                dbname=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                sslmode="require",
+                connect_timeout=15
+            )
+            return conn
+        except Exception as e:
+            print(f"[!] DB Connection Retry {attempt}/3 Failed: {e}")
+            time.sleep(3)
+    return None
 
 def init_db():
-    """Database tables aur schema auto-create karta hai."""
     create_query = """
     CREATE TABLE IF NOT EXISTS trades (
         id SERIAL PRIMARY KEY,
@@ -84,12 +84,11 @@ def init_db():
             conn.commit()
             cur.close()
             conn.close()
-            print("[+] DB Schema verification complete.")
+            print("[+] DB Schema verified successfully.")
         except Exception as e:
-            print(f"[!] Init DB Error: {e}")
+            print(f"[!] DB Init Error: {e}")
 
 def track_and_update_saved_trades():
-    """Active trades ki execution check karta hai aur TP/SL hit par alert karta hai."""
     conn = get_db_connection()
     if not conn:
         return
@@ -102,31 +101,35 @@ def track_and_update_saved_trades():
         for trade in active_trades:
             trade_id, symbol, entry_price, amount, tp1, tp2, stop_loss, status, created_at = trade
             
-            # Fetch Live Binance Price
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-            curr_price = float(requests.get(url, timeout=5).json()['price'])
-            
+            try:
+                res = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'}).json()
+                if not isinstance(res, dict) or 'price' not in res:
+                    continue
+                curr_price = float(res['price'])
+            except Exception:
+                continue
+
             new_status = status
-            alert_title = ""
-            alert_msg = ""
+            alert_title, alert_msg = "", ""
 
             if curr_price <= float(stop_loss):
                 new_status = "SL_HIT"
                 pnl_loss = round(float(amount) * ((curr_price - float(entry_price)) / float(entry_price)), 2)
                 alert_title = f"🚨 STOP LOSS HIT: {symbol}"
-                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nExit Price: ${curr_price}\nEstimated PnL: ${pnl_loss}\nPosition Size: ${amount}\nCreated: {created_at}"
+                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nExit: ${curr_price}\nPnL: ${pnl_loss}"
 
             elif curr_price >= float(tp2):
                 new_status = "TP2_HIT"
                 pnl_win = round(float(amount) * ((curr_price - float(entry_price)) / float(entry_price)), 2)
                 alert_title = f"🎯 TARGET 2 HIT (+12%): {symbol}"
-                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nExit Price: ${curr_price}\nProfit: +${pnl_win}\nPosition Size: ${amount}"
+                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nExit: ${curr_price}\nProfit: +${pnl_win}"
 
             elif curr_price >= float(tp1) and status == 'ACTIVE':
                 new_status = "TP1_HIT"
                 pnl_win = round(float(amount) * ((curr_price - float(entry_price)) / float(entry_price)), 2)
                 alert_title = f"✅ TARGET 1 HIT (+6%): {symbol}"
-                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nTarget Price: ${curr_price}\nPartial Profit: +${pnl_win}"
+                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nTP1: ${curr_price}"
 
             if new_status != status:
                 cur.execute("UPDATE trades SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s;", (new_status, trade_id))
@@ -176,12 +179,12 @@ def save_or_upgrade_trade(signal):
             conn.commit()
             send_ntfy_notification(
                 f"📈 SIGNAL RE-ENTRY ADDITION: {signal['Symbol']}",
-                f"Strong signal repeated.\nPosition increased from ${current_amount} to ${new_amount}.\nCurrent Price: ${signal['Price_Val']}"
+                f"Strong signal repeated.\nPosition increased: ${current_amount} ➔ ${new_amount}"
             )
     else:
         active_count = count_active_trades()
         if active_count >= MAX_ACTIVE_TRADES:
-            print(f"[!] Skipping {signal['Symbol']}: Active Trade limit reached ({MAX_ACTIVE_TRADES}/{MAX_ACTIVE_TRADES}).")
+            print(f"[!] Skipping {signal['Symbol']}: Active trade limit reached ({MAX_ACTIVE_TRADES}/{MAX_ACTIVE_TRADES}).")
             return
 
         insert_query = """
@@ -198,33 +201,47 @@ def save_or_upgrade_trade(signal):
         conn.commit()
         send_ntfy_notification(
             f"🚀 NEW SIGNAL TRIGGERED: {signal['Symbol']}",
-            f"Entry Price: ${signal['Price_Val']}\nAllocated Capital: ${BASE_TRADE_AMOUNT}\nTP1: ${signal['TP1']} | TP2: ${signal['TP2']}\nStop Loss: ${signal['SL']}"
+            f"Entry: ${signal['Price_Val']}\nAllocation: ${BASE_TRADE_AMOUNT}\nTP1: ${signal['TP1']} | TP2: ${signal['TP2']}\nSL: ${signal['SL']}"
         )
     cur.close()
     conn.close()
 
 def get_top_gainers(limit=20):
     url = "https://api.binance.com/api/v3/ticker/24hr"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
-        data = requests.get(url, timeout=10).json()
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        if not isinstance(data, list):
+            print(f"[!] Binance API Error/Response: {data}")
+            return []
+
         usdt_pairs = [
             item for item in data 
-            if item['symbol'].endswith('USDT') 
+            if isinstance(item, dict)
+            and item.get('symbol', '').endswith('USDT') 
             and not item['symbol'].endswith(('UPUSDT', 'DOWNUSDT', 'BEARUSDT', 'BULLUSDT'))
-            and float(item['quoteVolume']) > 1_000_000
+            and float(item.get('quoteVolume', 0)) > 1_000_000
         ]
         return sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']), reverse=True)[:limit]
     except Exception as e:
-        print(f"Error fetching tickers: {e}")
+        print(f"[!] Ticker Fetch Error: {e}")
         return []
 
 def get_klines(symbol, interval='1h', limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    data = requests.get(url, timeout=10).json()
-    df = pd.DataFrame(data, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
-    numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'taker_base_vol']
-    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric)
-    return df
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    try:
+        data = requests.get(url, headers=headers, timeout=10).json()
+        if not isinstance(data, list):
+            return pd.DataFrame()
+        df = pd.DataFrame(data, columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'taker_base_vol']
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
@@ -238,7 +255,7 @@ def calculate_ema(series, span):
 
 def analyze_coin(symbol, gain_pct):
     df = get_klines(symbol, interval='1h', limit=100)
-    if df.empty:
+    if df.empty or len(df) < 50:
         return None
     
     df['RSI'] = calculate_rsi(df['close'], period=14)
@@ -276,17 +293,21 @@ def analyze_coin(symbol, gain_pct):
     }
 
 def main():
+    print("[*] Starting Spot Trader Engine...")
     init_db()
     
-    # 1. Active Trades Check & Update
+    print("[*] Tracking Active Trades...")
     track_and_update_saved_trades()
     
-    # 2. Market Scanning for New/Upgraded Signals
+    print("[*] Scanning Binance Market...")
     gainers = get_top_gainers(20)
     for ticker in gainers:
         res = analyze_coin(ticker['symbol'], ticker['priceChangePercent'])
         if res:
+            print(f"[+] Signal Detected: {res['Symbol']}")
             save_or_upgrade_trade(res)
+            
+    print("[*] Execution Completed.")
 
 if __name__ == "__main__":
     main()
