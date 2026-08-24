@@ -8,6 +8,9 @@ import psycopg2
 # ==========================================================
 # CONFIGURATION & SECRETS
 # ==========================================================
+# Official Binance Data API endpoint (Bypasses geo-restrictions on public data)
+BINANCE_DATA_URL = "https://data-api.binance.vision"
+
 DB_HOST = "pg-39432034-project-b71a.aivencloud.com"
 DB_PORT = "23464"
 DB_NAME = "defaultdb"
@@ -101,7 +104,7 @@ def track_and_update_saved_trades():
         for trade in active_trades:
             trade_id, symbol, entry_price, amount, tp1, tp2, stop_loss, status, created_at = trade
             
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+            url = f"{BINANCE_DATA_URL}/api/v3/ticker/price?symbol={symbol}"
             try:
                 res = requests.get(url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'}).json()
                 if not isinstance(res, dict) or 'price' not in res:
@@ -207,7 +210,7 @@ def save_or_upgrade_trade(signal):
     conn.close()
 
 def get_top_gainers(limit=20):
-    url = "https://api.binance.com/api/v3/ticker/24hr"
+    url = f"{BINANCE_DATA_URL}/api/v3/ticker/24hr"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         response = requests.get(url, headers=headers, timeout=10)
@@ -230,7 +233,7 @@ def get_top_gainers(limit=20):
         return []
 
 def get_klines(symbol, interval='1h', limit=100):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    url = f"{BINANCE_DATA_URL}/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     try:
         data = requests.get(url, headers=headers, timeout=10).json()
