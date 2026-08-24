@@ -28,10 +28,11 @@ MAX_TRADE_AMOUNT = 35.0
 
 def send_ntfy_notification(title, message, tags="chart_with_upwards_trend"):
     try:
+        # Headers must be ASCII/Latin-1 compatible. Emojis belong in ntfy tags or utf-8 encoded body.
         requests.post(
             NTFY_TOPIC_URL,
             data=message.encode('utf-8'),
-            headers={"Title": title, "Tags": tags, "Priority": "high"},
+            headers={"Title": title.encode('ascii', 'ignore').decode('ascii'), "Tags": tags, "Priority": "high"},
             timeout=10
         )
     except Exception as e:
@@ -119,20 +120,20 @@ def track_and_update_saved_trades():
             if curr_price <= float(stop_loss):
                 new_status = "SL_HIT"
                 pnl_loss = round(float(amount) * ((curr_price - float(entry_price)) / float(entry_price)), 2)
-                alert_title = f"🚨 STOP LOSS HIT: {symbol}"
-                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nExit: ${curr_price}\nPnL: ${pnl_loss}"
+                alert_title = f"STOP LOSS HIT: {symbol}"
+                alert_msg = f"🚨 Symbol: {symbol}\nEntry: ${entry_price}\nExit: ${curr_price}\nPnL: ${pnl_loss}"
 
             elif curr_price >= float(tp2):
                 new_status = "TP2_HIT"
                 pnl_win = round(float(amount) * ((curr_price - float(entry_price)) / float(entry_price)), 2)
-                alert_title = f"🎯 TARGET 2 HIT (+12%): {symbol}"
-                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nExit: ${curr_price}\nProfit: +${pnl_win}"
+                alert_title = f"TARGET 2 HIT (+12%): {symbol}"
+                alert_msg = f"🎯 Symbol: {symbol}\nEntry: ${entry_price}\nExit: ${curr_price}\nProfit: +${pnl_win}"
 
             elif curr_price >= float(tp1) and status == 'ACTIVE':
                 new_status = "TP1_HIT"
                 pnl_win = round(float(amount) * ((curr_price - float(entry_price)) / float(entry_price)), 2)
-                alert_title = f"✅ TARGET 1 HIT (+6%): {symbol}"
-                alert_msg = f"Symbol: {symbol}\nEntry: ${entry_price}\nTP1: ${curr_price}"
+                alert_title = f"TARGET 1 HIT (+6%): {symbol}"
+                alert_msg = f"✅ Symbol: {symbol}\nEntry: ${entry_price}\nTP1: ${curr_price}"
 
             if new_status != status:
                 cur.execute("UPDATE trades SET status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s;", (new_status, trade_id))
@@ -181,8 +182,8 @@ def save_or_upgrade_trade(signal):
             cur.execute("UPDATE trades SET allocated_amount = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s;", (new_amount, trade_id))
             conn.commit()
             send_ntfy_notification(
-                f"📈 SIGNAL RE-ENTRY ADDITION: {signal['Symbol']}",
-                f"Strong signal repeated.\nPosition increased: ${current_amount} ➔ ${new_amount}"
+                f"SIGNAL RE-ENTRY ADDITION: {signal['Symbol']}",
+                f"📈 Strong signal repeated.\nPosition increased: ${current_amount} ➔ ${new_amount}"
             )
     else:
         active_count = count_active_trades()
@@ -203,8 +204,8 @@ def save_or_upgrade_trade(signal):
         ))
         conn.commit()
         send_ntfy_notification(
-            f"🚀 NEW SIGNAL TRIGGERED: {signal['Symbol']}",
-            f"Entry: ${signal['Price_Val']}\nAllocation: ${BASE_TRADE_AMOUNT}\nTP1: ${signal['TP1']} | TP2: ${signal['TP2']}\nSL: ${signal['SL']}"
+            f"NEW SIGNAL TRIGGERED: {signal['Symbol']}",
+            f"🚀 Entry: ${signal['Price_Val']}\nAllocation: ${BASE_TRADE_AMOUNT}\nTP1: ${signal['TP1']} | TP2: ${signal['TP2']}\nSL: ${signal['SL']}"
         )
     cur.close()
     conn.close()
@@ -319,12 +320,12 @@ def main():
     signals_found = len(detected_signals)
     
     if signals_found > 0:
-        summary_msg = f"Scan complete on {scanned_count} coins.\nSignals found ({signals_found}): {', '.join(detected_signals)}\nActive Trades: {active_count}/{MAX_ACTIVE_TRADES}"
+        summary_msg = f"🔍 Scan complete on {scanned_count} coins.\nSignals found ({signals_found}): {', '.join(detected_signals)}\nActive Trades: {active_count}/{MAX_ACTIVE_TRADES}"
     else:
-        summary_msg = f"Scan complete on {scanned_count} coins.\nNo new breakout signals detected.\nActive Trades: {active_count}/{MAX_ACTIVE_TRADES}"
+        summary_msg = f"🔍 Scan complete on {scanned_count} coins.\nNo new breakout signals detected.\nActive Trades: {active_count}/{MAX_ACTIVE_TRADES}"
 
     send_ntfy_notification(
-        title="🔍 Market Scan Completed",
+        title="Market Scan Completed",
         message=summary_msg,
         tags="white_check_mark"
     )
