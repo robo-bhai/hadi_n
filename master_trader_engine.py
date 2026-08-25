@@ -1260,35 +1260,58 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
         send_ex_trade_signal(trade_title, trade_body, None)
 
+        # =========================================================================
     # 2. 🌐 Broadcast Signal to Web App & Server FIRST (Save DB se pehle)
+    # =========================================================================
     try:
-        broadcast_all_signals({
+        print("🔄 Initiating signal broadcast...")
+        
+        # Safely extract and format trade parameters with fallback defaults
+        broadcast_payload = {
+            "symbol": symbol_input,
+            "direction": direction,
+            "entry_price": float(live_price) if live_price is not None else 0.0,
+            "sl_price": float(sl_price) if sl_price is not None else 0.0,
+            "tp1_price": float(tp1_price) if tp1_price is not None else 0.0,
+            "tp2_price": float(tp2_price) if tp2_price is not None else 0.0,
+            "card_base64": card_base64_str or "",
+        }
+
+        broadcast_all_signals(broadcast_payload)
+        
+    except Exception as br_err:
+        import traceback
+        print(f"❌ Broadcast Execution Error: {br_err}")
+        print("🔍 Traceback Details:")
+        traceback.print_exc()
+
+    # =========================================================================
+    # 3. 💾 Save Executed Trade to DB (Broadcast ke baad)
+    # =========================================================================
+    try:
+        print("💾 Saving trade execution data to DB...")
+        
+        db_payload = {
             "symbol": symbol_input,
             "direction": direction,
             "entry_price": live_price,
             "sl_price": sl_price,
             "tp1_price": tp1_price,
             "tp2_price": tp2_price,
-            "card_base64": card_base64_str,
-        })
-    except Exception as br_err:
-        print(f"❌ Broadcast Execution Error: {br_err}")
+            "margin_frozen": required_margin,
+            "pos_value": pos_value,
+            "coin_qty": coin_qty,
+            "leverage": leverage,
+            "available_cap": port.get("available", 0) if isinstance(port, dict) else 0,
+            "frozen_cap": port.get("frozen", 0) if isinstance(port, dict) else 0,
+        }
 
-    # 3. 💾 Save Executed Trade to DB (Broadcast ke baad)
-    save_trade_to_db({
-        "symbol": symbol_input,
-        "direction": direction,
-        "entry_price": live_price,
-        "sl_price": sl_price,
-        "tp1_price": tp1_price,
-        "tp2_price": tp2_price,
-        "margin_frozen": required_margin,
-        "pos_value": pos_value,
-        "coin_qty": coin_qty,
-        "leverage": leverage,
-        "available_cap": port["available"],
-        "frozen_cap": port["frozen"],
-    })
+        save_trade_to_db(db_payload)
+
+    except Exception as db_err:
+        import traceback
+        print(f"❌ DB Save Execution Error: {db_err}")
+        traceback.print_exc()
 
     return True
 
