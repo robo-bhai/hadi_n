@@ -1,32 +1,271 @@
 import os
+import ssl
 import base64
 import sqlite3
 import requests
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# Dynamic Database Import (Uses your existing get_db_connection setup)
-from master_trader_engine import get_db_connection, init_db
+# Try importing mysql.connector cleanly
+try:
+    import mysql.connector
+    MYSQL_AVAILABLE = True
+except ImportError:
+    MYSQL_AVAILABLE = False
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "hadi88_super_secret_key_2026")
+app.secret_key = os.environ.get("SECRET_KEY", "hadi88_super_secret_key_2026")
 
-# Dynamic DB Auto-Initialization on start without disturbing existing schemas
+
+# =========================================================
+# 🗄️ DATABASE MANAGEMENT (INTEGRATED)
+# =========================================================
+
+def get_db_connection():
+    """
+    Connects to MySQL if GitHub Secrets / Env Variables exist with SSL Support.
+    Falls back to Local SQLite database seamlessly if MySQL is unavailable.
+    """
+    db_host = os.environ.get("DB_HOST", "mysql-3a3d5779-project-b71a.b.aivencloud.com")
+    db_user = os.environ.get("DB_USER", "avnadmin")
+    db_pass = os.environ.get("DB_PASS", os.environ.get("DB_PASSWORD", ""))
+    db_name = os.environ.get("DB_NAME", "defaultdb")
+    db_port = int(os.environ.get("DB_PORT", "23464"))
+
+    if MYSQL_AVAILABLE and db_host and db_user and db_pass and db_name:
+        # Attempt 1: Native SSL Context
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+
+            conn = mysql.connector.connect(
+                host=db_host,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                port=db_port,
+                ssl_context=ssl_ctx,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception:
+            pass
+
+        # Attempt 2: Standard SSL Fallback
+        try:
+            conn = mysql.connector.connect(
+                host=db_host,
+                user=db_user,
+                password=db_pass,
+                database=db_name,
+                port=db_port,
+                ssl_disabled=False,
+                ssl_verify_cert=False,
+                connect_timeout=30
+            )
+            return conn, "MYSQL"
+        except Exception as e:
+            print(f"⚠️ MySQL Connection Error: {e}. Falling back to SQLite...")
+
+    # Fallback to Local SQLite DB
+    conn = sqlite3.connect("trading_system.db")
+    return conn, "SQLITE"
+
+
+def init_db():
+    """
+    Ensures required tables (portfolio, trades, users, user_signals) exist in MySQL/SQLite.
+    Handles dynamic column migrations for existing MySQL & SQLite production databases.
+    """
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+
+    ph = "%s" if db_type == "MYSQL" else "?"
+
+    # =========================================================
+    # 🐬 MYSQL SCHEMA DEFINITIONS & SAFE MIGRATIONS
+    # =========================================================
+    if db_type == "MYSQL":
+        # 1. Portfolio Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INT PRIMARY KEY,
+            total_capital DOUBLE,
+            available_capital DOUBLE,
+            frozen_margin DOUBLE
+        )
+        """)
+
+        # 2. Trades Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20),
+            direction VARCHAR(10),
+            entry_price DOUBLE,
+            sl_price DOUBLE,
+            tp1_price DOUBLE,
+            tp2_price DOUBLE,
+            margin_frozen DOUBLE,
+            pos_value DOUBLE,
+            coin_qty DOUBLE,
+            leverage INT,
+            status VARCHAR(20),
+            exit_reason VARCHAR(255) NULL,
+            close_price DOUBLE NULL,
+            pnl DOUBLE NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 3. Users Table (Authentication & Custom NTFY Topics)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            ntfy_topic VARCHAR(100) NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 4. User Signals Table (Live Signals & Base64 Cards for Web Dashboard)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_signals (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20),
+            direction VARCHAR(10),
+            entry_price DOUBLE,
+            sl_price DOUBLE,
+            tp1_price DOUBLE,
+            tp2_price DOUBLE,
+            card_base64 LONGTEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 🛠️ Safe Migration: Existing MySQL Trades Table Columns
+        mysql_columns_to_add = [
+            "ADD COLUMN exit_reason VARCHAR(255) NULL",
+            "ADD COLUMN close_price DOUBLE NULL",
+            "ADD COLUMN pnl DOUBLE NULL",
+            "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+        ]
+
+        for col_statement in mysql_columns_to_add:
+            try:
+                cursor.execute(f"ALTER TABLE trades {col_statement}")
+            except Exception:
+                pass  # Skip if column already exists
+
+        # Safe Migration for Users Table (if ntfy_topic missing in older users table)
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic VARCHAR(100) NULL")
+        except Exception:
+            pass
+
+    # =========================================================
+    # 🗄️ SQLITE SCHEMA DEFINITIONS & SAFE MIGRATIONS (FALLBACK)
+    # =========================================================
+    else:
+        # 1. Portfolio Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INTEGER PRIMARY KEY,
+            total_capital REAL,
+            available_capital REAL,
+            frozen_margin REAL
+        )
+        """)
+
+        # 2. Trades Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            direction TEXT,
+            entry_price REAL,
+            sl_price REAL,
+            tp1_price REAL,
+            tp2_price REAL,
+            margin_frozen REAL,
+            pos_value REAL,
+            coin_qty REAL,
+            leverage INTEGER,
+            status TEXT,
+            exit_reason TEXT NULL,
+            close_price REAL NULL,
+            pnl REAL NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 3. Users Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            ntfy_topic TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 4. User Signals Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            direction TEXT,
+            entry_price REAL,
+            sl_price REAL,
+            tp1_price REAL,
+            tp2_price REAL,
+            card_base64 TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 🛠️ Safe Migration: SQLite Fallback DB
+        sqlite_columns = [
+            ("exit_reason", "TEXT"),
+            ("close_price", "REAL"),
+            ("pnl", "REAL"),
+            ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+        ]
+        for col_name, col_type in sqlite_columns:
+            try:
+                cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic TEXT NULL")
+        except Exception:
+            pass
+
+    # =========================================================
+    # 💰 PORTFOLIO INITIAL SEED RECORD
+    # =========================================================
+    cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
+            (1,),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+# Auto Initialize DB schemas on server boot
 init_db()
 
-# =========================================================
-# 🔐 AUTHENTICATION & USER MANAGEMENT
-# =========================================================
 
-@app.route("/")
-def home():
-    """
-    Root route redirecting authenticated users to dashboard and guest users to login.
-    """
-    if "user_id" in session:
-        return redirect(url_for("dashboard"))
-    return redirect(url_for("login"))
-
+# =========================================================
+# 👤 AUTHENTICATION & USER MANAGEMENT
+# =========================================================
 
 @app.route("/signup", methods=["GET", "POST"])
 def signup():
@@ -53,10 +292,10 @@ def signup():
             return redirect(url_for("login"))
         except Exception as e:
             conn.close()
-            return render_template("signup.html", error="Username already exists!")
+            print(f"Signup Error Details: {e}")
+            return render_template("signup.html", error=f"Signup failed: {str(e)}")
 
     return render_template("signup.html")
-
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -82,12 +321,10 @@ def login():
 
     return render_template("login.html")
 
-
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
-
 
 @app.route("/profile", methods=["GET", "POST"])
 def profile():
@@ -110,8 +347,9 @@ def profile():
 
     return render_template("profile.html", username=user_info[0], ntfy_topic=user_info[1])
 
+
 # =========================================================
-# 📊 USER DASHBOARD & LIVE API
+# 📊 USER DASHBOARD
 # =========================================================
 
 @app.route("/dashboard")
@@ -122,62 +360,21 @@ def dashboard():
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
-    # Fully responsive query for both MySQL & SQLite
-    cursor.execute("""
-        SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_base64, created_at 
-        FROM user_signals 
-        ORDER BY id DESC LIMIT 20
-    """)
-
+    cursor.execute("SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_base64, created_at FROM user_signals ORDER BY id DESC LIMIT 20")
     signals = cursor.fetchall()
     conn.close()
 
     return render_template("dashboard.html", signals=signals, username=session.get("username"))
 
 
-@app.route("/api/signals/latest", methods=["GET"])
-def get_latest_signals():
-    """
-    Returns recent signals as JSON for live AJAX dashboard polling.
-    """
-    if "user_id" not in session:
-        return jsonify({"status": "unauthorized"}), 401
-
-    conn, db_type = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_base64, created_at 
-        FROM user_signals 
-        ORDER BY id DESC LIMIT 20
-    """)
-    rows = cursor.fetchall()
-    conn.close()
-
-    signals_list = []
-    for r in rows:
-        signals_list.append({
-            "id": r[0],
-            "symbol": r[1],
-            "direction": r[2],
-            "entry_price": r[3],
-            "sl_price": r[4],
-            "tp1_price": r[5],
-            "tp2_price": r[6],
-            "card_base64": r[7],
-            "created_at": str(r[8])
-        })
-
-    return jsonify({"status": "success", "signals": signals_list}), 200
-
 # =========================================================
-# 📢 SIGNAL BROADCAST ENDPOINT (TRADER ENGINE CALLS THIS)
+# 🚀 SIGNAL BROADCAST ENDPOINT (TRADER ENGINE CALLS THIS)
 # =========================================================
 
 @app.route("/api/signals/broadcast", methods=["POST"])
 def broadcast_signal():
     """
-    Trader engine receives signal, saves to database, and broadcasts to user NTFY topics.
+    Trader engine signal receive karke DB mein save karta hai aur sabhi Users ke NTFY topics par push kar deta hai.
     """
     data = request.json or {}
     symbol = data.get("symbol")
@@ -243,5 +440,4 @@ def broadcast_signal():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
