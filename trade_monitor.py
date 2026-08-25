@@ -159,19 +159,22 @@ def update_trade_partial_in_db(trade_id, new_margin, new_pos_val, flag_col):
 # 🛡️ DYNAMIC USDT-BASED BREAK-EVEN / TRAILING ENGINE
 # =========================================================
 def check_trailing_and_breakeven(trade, current_price):
+  """Professional Dynamic Stop-Loss Locking Strategy (Single Exit Architecture).
+
+  Locks profits into Stop Loss as PnL reaches specific thresholds. Covers all
+  Binance entry and exit trading fees to guarantee net profit upon SL hit.
+  """
   entry = trade.get('entry_price', 0.0)
   sl = trade.get('sl_price', 0.0)
   direction = str(trade.get('direction', '')).upper()
   t_id = trade.get('id')
   symbol = trade.get('symbol', '')
   pos_val = trade.get('pos_value', 0.0)
-  margin = trade.get('margin_frozen', 0.0)
-  tp_020 = trade.get('tp_020_hit', 0)
-  tp_050 = trade.get('tp_050_hit', 0)
 
   if pos_val <= 0 or entry <= 0:
     return sl
 
+  # Total Roundtrip Fee (Entry + Exit)
   total_fee_usdt = pos_val * (BINANCE_FEE_RATE * 2)
   is_long = direction in ['LONG', 'BUY']
   is_short = direction in ['SHORT', 'SELL']
@@ -179,7 +182,7 @@ def check_trailing_and_breakeven(trade, current_price):
   if not (is_long or is_short):
     return sl
 
-  # Calculate Current PnL in USDT
+  # Live Un-realized PnL in USDT (Full Position Size)
   current_pnl_usdt = (
       pos_val * ((current_price - entry) / entry)
       if is_long
@@ -187,98 +190,54 @@ def check_trailing_and_breakeven(trade, current_price):
   )
 
   # -------------------------------------------------------------
-  # 💥 PARTIAL TAKE PROFIT EXECUTIONS
+  # 🛡️ PROFESSIONAL SL LOCKING TIERS (HIGHEST TO LOWEST)
   # -------------------------------------------------------------
-  # Step 1: At +$0.20 PnL -> Sell 50% Position
-  if current_pnl_usdt >= 0.20 and tp_020 == 0:
-    reduced_margin = margin * 0.5
-    reduced_pos_val = pos_val * 0.5
-    update_trade_partial_in_db(
-        t_id, reduced_margin, reduced_pos_val, 'tp_020_hit'
-    )
-
-    trade['margin_frozen'] = reduced_margin
-    trade['pos_value'] = reduced_pos_val
-    trade['tp_020_hit'] = 1
-    pos_val = reduced_pos_val
-
-    msg = (
-        f'🎯 PARTIAL TP 1 HIT (+50% CLOSED)\n'
-        '───────────────────────────\n'
-        f'📌 Symbol          : {symbol} [{direction}]\n'
-        f'💵 Realized PnL    : +$0.10 USDT\n'
-        f'🔒 Remaining Margin : ${reduced_margin:.2f} USDT\n'
-        '───────────────────────────'
-    )
-    send_ntfy_notification(
-        title=f'🎯 50% Scaled Out: {symbol}',
-        message_body=msg,
-        tags=['moneybag', 'scissors'],
-        topic=EVENT_ALERT_TOPIC,
-    )
-
-  # Step 3: At +$0.50 PnL -> Sell 50% of Remaining Position
-  if current_pnl_usdt >= 0.50 and tp_050 == 0:
-    reduced_margin = margin * 0.5
-    reduced_pos_val = pos_val * 0.5
-    update_trade_partial_in_db(
-        t_id, reduced_margin, reduced_pos_val, 'tp_050_hit'
-    )
-
-    trade['margin_frozen'] = reduced_margin
-    trade['pos_value'] = reduced_pos_val
-    trade['tp_050_hit'] = 1
-    pos_val = reduced_pos_val
-
-    msg = (
-        f'🚀 PARTIAL TP 2 HIT (+50% OF REMAINING CLOSED)\n'
-        '───────────────────────────\n'
-        f'📌 Symbol          : {symbol} [{direction}]\n'
-        f'💵 Realized PnL    : +$0.25 USDT\n'
-        f'🔒 Remaining Margin : ${reduced_margin:.2f} USDT\n'
-        '───────────────────────────'
-    )
-    send_ntfy_notification(
-        title=f'🚀 Partial TP 2: {symbol}',
-        message_body=msg,
-        tags=['rocket', 'moneybag'],
-        topic=EVENT_ALERT_TOPIC,
-    )
-
-  # -------------------------------------------------------------
-  # 🛡️ DYNAMIC TRAILING & STOP-LOSS LOCKS (FIXED ORDER: HIGHEST TO LOWEST)
-  # -------------------------------------------------------------
-  tiers = [(1.00, 0.60), (0.50, 0.45), (0.30, 0.25)]
+  # Format: (Trigger PnL Threshold, Net Profit To Lock)
+  # Tier 3: PnL >= $0.40 -> Lock $0.30 Net Profit + Fees
+  # Tier 2: PnL >= $0.30 -> Lock $0.20 Net Profit + Fees
+  # Tier 1: PnL >= $0.25 -> Lock $0.15 Net Profit + Fees
+  tiers = [
+      (0.40, 0.30),
+      (0.30, 0.20),
+      (0.25, 0.15),
+  ]
 
   target_sl = sl
   locked_profit = 0.0
 
   for threshold, lock_amount in tiers:
     if current_pnl_usdt >= threshold:
+      # Gross Target = Net Desired Profit + Roundtrip Exchange Fees
       target_gross = lock_amount + total_fee_usdt
+
       target_sl = (
           entry * (1 + (target_gross / pos_val))
           if is_long
           else entry * (1 - (target_gross / pos_val))
       )
-      locked_profit = lock_amount
-      break
 
+      locked_profit = lock_amount
+      break  # Sab se highest achieved tier pehle apply hoga
+
+  # Check agar Naya SL Purane SL Se Behtar (More Favorable) Hai
   is_sl_improved = (is_long and target_sl > sl) or (
       is_short and (sl == 0 or target_sl < sl)
   )
 
   if is_sl_improved:
     new_sl = target_sl
+
+    # Database Update
     update_sl_in_db(t_id, new_sl)
     trade['sl_price'] = new_sl
     trade['is_sl_modified'] = 1
 
     print(
         f'🛡️ [PROFIT LOCKED] Trade #{t_id} [{symbol}] SL updated to'
-        f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT)'
+        f' ${new_sl:.5f} (Locked +${locked_profit:.2f} NET USDT + Fees)'
     )
 
+    # Push Alert via Ntfy
     msg = (
         f'🛡️ PROFIT LOCKED (+${locked_profit:.2f} NET) FOR TRADE #{t_id}\n'
         '───────────────────────────\n'
@@ -295,9 +254,11 @@ def check_trailing_and_breakeven(trade, current_price):
         tags=['shield', 'moneybag'],
         topic=EVENT_ALERT_TOPIC,
     )
+
     return new_sl
 
   return sl
+
 
 
 # =========================================================
