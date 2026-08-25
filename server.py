@@ -236,11 +236,11 @@ def init_db():
     # =========================================================
     # 💰 PORTFOLIO INITIAL SEED RECORD
     # =========================================================
-    cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
-    if cursor.fetchone()[0] == 0:
+    cursor.execute(f"SELECT id FROM portfolio WHERE id = {ph}", (1,))
+    if not cursor.fetchone():
         cursor.execute(
-            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
-            (1,),
+            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, {ph}, {ph}, {ph})",
+            (1, 100.0, 100.0, 0.0),
         )
 
     conn.commit()
@@ -393,20 +393,24 @@ def broadcast_signal():
     user_topics = [row[0] for row in cursor.fetchall()]
     conn.close()
 
-    # 3. Broadcast Signal Image & Card to all Registered User Topics
-    card_bytes = base64.b64decode(card_b64) if card_b64 else None
+    # 3. Safe Base64 Decode
+    card_bytes = None
+    if card_b64:
+        try:
+            card_bytes = base64.b64decode(card_b64)
+        except Exception as e:
+            print(f"⚠️ Base64 decode error: {e}")
+
+    # 4. Broadcast Signal Image & Card to all Registered User Topics
     title = f"{'🟢' if direction == 'LONG' else '🔴'} SIGNAL: {symbol} ({direction})"
-    title_b64 = base64.b64encode(title.encode('utf-8')).decode('utf-8')
-    encoded_title = f"=?utf-8?b?{title_b64}?="
 
     for topic in set(user_topics):
         url = f"https://ntfy.sh/{topic}"
         try:
             if card_bytes:
-                body_b64 = base64.b64encode(trade_body.encode('utf-8')).decode('utf-8')
                 headers = {
-                    "X-Title": encoded_title,
-                    "X-Message": f"=?utf-8?b?{body_b64}?=",
+                    "Title": title,
+                    "Message": trade_body or f"Entry: {entry_price} | SL: {sl_price} | TP1: {tp1_price}",
                     "Priority": "high",
                     "Tags": "chart_with_upwards_trend,signal_strength",
                     "Filename": f"signal_{symbol}.png",
@@ -415,7 +419,7 @@ def broadcast_signal():
                 requests.put(url, data=card_bytes, headers=headers, timeout=10)
             else:
                 headers = {
-                    "X-Title": encoded_title,
+                    "Title": title,
                     "Priority": "high",
                     "Tags": "chart_with_upwards_trend",
                     "User-Agent": "Mozilla/5.0"
@@ -425,6 +429,7 @@ def broadcast_signal():
             print(f"❌ Failed to dispatch NTFY to topic {topic}: {e}")
 
     return jsonify({"status": "success", "broadcasted_topics_count": len(user_topics)}), 200
+
 
 
 if __name__ == "__main__":
