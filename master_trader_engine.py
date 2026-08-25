@@ -890,51 +890,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"📊 ACTIVE TRADES IN DB: {active_count}/5")
     print("=" * 70)
 
-    # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
-    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=5)
-    if is_halted:
-        msg = f"🛑 EMERGENCY STOP: {halt_reason}"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🛑 [DAILY CIRCUIT BREAKER] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
-    if active_count >= 5:
-        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 5 Active Trades limit reached ({active_count}/5)."
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 2: Low Available Capital
-    if port['available'] < 5.0:
-        msg = f"❌ Low Available Capital (${port['available']:.2f} USDT). Cannot place trade."
-        print(msg)
-        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 3: Duplicate Active Pair Check
-    if is_coin_trade_active(symbol_input):
-        msg = f"❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 3.5: Dynamic Cooldown Check (SL = 24H | TP = 4H)
-    is_blocked, cooldown_msg = check_dynamic_cooldown(symbol_input)
-    if is_blocked:
-        msg = f"🚫 TRADE REJECTED: [{symbol_input}] - {cooldown_msg}"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🚫 [DYNAMIC COOLDOWN] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
-    corr_risk, corr_msg = check_correlation_exposure(symbol_input)
-    if corr_risk:
-        msg = f"⚠️ CORRELATION BLOCKED: {corr_msg}"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
-        return False
-
     print(f"\n⏳ Fetching Live Market Data, Orderbook Depth & OI for [{symbol_input}]...")
     
     btc_regime, btc_price = get_btc_regime()
@@ -1095,9 +1050,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     # =========================================================
     # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
     # =========================================================
-    # =========================================================
-    # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
-    # =========================================================
     total_account_capital = port['total']
     max_allowed_dollar_risk = total_account_capital * 0.01  # Exact 1% Total Equity Risk ($1.00 USDT)
     atr_sl_buffer = atr_val * 1.5
@@ -1237,17 +1189,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     trade_body += f"━━━━━━━━━━━━━━━━━━━━━━"
 
     # =========================================================
-    # 🎯 TRADE EXECUTION & DB SAVE BLOCK
-    # =========================================================
-
-    # 🖼️ Send Image Card + Message strictly to HARDCODED Topic ('lskejej_hdhehje')
-    # 🖼️ Generate Signal Card Image & Convert to Base64
-    # =========================================================
-    # 🎯 TRADE EXECUTION & DB SAVE BLOCK
-    # =========================================================
-
-    # 🖼️ Generate Signal Card Image & Convert to Base64
-    # =========================================================
     # 🎯 TRADE EXECUTION, BROADCAST & DB SAVE BLOCK
     # =========================================================
 
@@ -1275,11 +1216,8 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
         send_ex_trade_signal(trade_title, trade_body, None)
 
-        # =========================================================================
-    # 2. 🌐 Broadcast Signal to Web App & Server FIRST (Save DB se pehle)
     # =========================================================================
-    # =========================================================================
-    # 2. 🌐 Broadcast Signal to Web App & Server FIRST (Save DB se pehle)
+    # 2. 🌐 BROADCAST SIGNAL TO WEB APP & SERVER (Early Broadcast)
     # =========================================================================
     try:
         print("🔄 Initiating signal broadcast...")
@@ -1293,7 +1231,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
             "tp1_price": float(tp1_price) if tp1_price is not None else 0.0,
             "tp2_price": float(tp2_price) if tp2_price is not None else 0.0,
             "card_base64": card_base64_str or "",
-            "trade_body": trade_body or "",  # 👈 Fixed: Server validation aur ntfy broadcast ke liye trade_body pass karna uri hai
+            "trade_body": trade_body or "",  # Server validation aur ntfy broadcast ke liye
         }
 
         broadcast_all_signals(broadcast_payload)
@@ -1304,9 +1242,57 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print("🔍 Traceback Details:")
         traceback.print_exc()
 
+    # =========================================================================
+    # 🛑 REJECTION GUARDS BLOCK (Broadcast Hone ke Baad Check Hoonge)
+    # =========================================================================
+
+    # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
+    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=5)
+    if is_halted:
+        msg = f"🛑 EMERGENCY STOP: {halt_reason}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🛑 [DAILY CIRCUIT BREAKER] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
+    if active_count >= 5:
+        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 5 Active Trades limit reached ({active_count}/5)."
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 2: Low Available Capital
+    if port['available'] < 5.0:
+        msg = f"❌ Low Available Capital (${port['available']:.2f} USDT). Cannot place trade."
+        print(msg)
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 3: Duplicate Active Pair Check
+    if is_coin_trade_active(symbol_input):
+        msg = f"❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 3.5: Dynamic Cooldown Check (SL = 24H | TP = 4H)
+    is_blocked, cooldown_msg = check_dynamic_cooldown(symbol_input)
+    if is_blocked:
+        msg = f"🚫 TRADE REJECTED: [{symbol_input}] - {cooldown_msg}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [DYNAMIC COOLDOWN] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
+    corr_risk, corr_msg = check_correlation_exposure(symbol_input)
+    if corr_risk:
+        msg = f"⚠️ CORRELATION BLOCKED: {corr_msg}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
+        return False
 
     # =========================================================================
-    # 3. 💾 Save Executed Trade to DB (Broadcast ke baad)
+    # 3. 💾 Save Executed Trade to DB (Guards Clear Hone ke Baad)
     # =========================================================================
     try:
         print("💾 Saving trade execution data to DB...")
@@ -1334,6 +1320,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         traceback.print_exc()
 
     return True
+
 
 
 
