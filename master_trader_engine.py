@@ -1130,6 +1130,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"🚫 [LOW RRR REJECTED] {symbol_input}", msg)
+        
         return False
 
     # 🛑 STRICT FILTER 2: Total Capital 1% Risk Based Position Sizing
@@ -1259,6 +1260,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'tp2_price': tp2_price,
         'card_base64': card_base64_str
     })
+    broadcast_all_signals(trade_data)
 
     return True
 
