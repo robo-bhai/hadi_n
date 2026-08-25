@@ -824,11 +824,14 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     atr_pct = (atr_val / live_price) * 100
     if atr_pct > 3.5:  
-        volatility_state, leverage = "HIGH ⚡", 1
+        volatility_state = "HIGH ⚡"
     elif atr_pct < 1.2:  
-        volatility_state, leverage = "LOW 🧊", 3
+        volatility_state = "LOW 🧊"
     else:
-        volatility_state, leverage = "NORMAL 🟢", 2
+        volatility_state = "NORMAL 🟢"
+
+    leverage = 1  # 🔒 Hardcoded 1x Spot-Style Leverage
+
 
     # =========================================================
     # 🎯 FULLY SYNCED QUANT SCORING ENGINE
@@ -945,17 +948,24 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     # =========================================================
     # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
     # =========================================================
+    # =========================================================
+    # 🎯 DYNAMIC KEY-LEVEL RRR & STRICT 1% RISK ALLOCATION ENGINE
+    # =========================================================
     total_account_capital = port['total']
     max_allowed_dollar_risk = total_account_capital * 0.01  # Exact 1% Total Equity Risk ($1.00 USDT)
     atr_sl_buffer = atr_val * 1.5
+
+    # Target Multiplier setup for minimum RRR guarantee
+    target_rrr = 1.2
 
     if direction == "LONG":
         sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
         risk_dist = live_price - sl_price
         
-        # Expanded Scalp Target for Optimized RRR (1.5x ATR)
-        tp1_price = live_price + (atr_val * 1.5)
-        tp2_price = resistance_4h
+        # Enforce minimum TP1 distance based on 1.2 RRR
+        min_tp_dist = risk_dist * target_rrr
+        tp1_price = max(live_price + (atr_val * 1.5), live_price + min_tp_dist)
+        tp2_price = max(resistance_4h, tp1_price * 1.01)
         
         reward_dist = tp1_price - live_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
@@ -965,16 +975,17 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
         risk_dist = sl_price - live_price
         
-        # Expanded Scalp Target for Optimized RRR (1.5x ATR)
-        tp1_price = live_price - (atr_val * 1.5)
-        tp2_price = support_4h
+        # Enforce minimum TP1 distance based on 1.2 RRR
+        min_tp_dist = risk_dist * target_rrr
+        tp1_price = min(live_price - (atr_val * 1.5), live_price - min_tp_dist)
+        tp2_price = min(support_4h, tp1_price * 0.99)
         
         reward_dist = live_price - tp1_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
         breakeven_lock_level = tp1_price
 
-    # 🛑 SCALP-OPTIMIZED FILTER 1: Minimum Risk-to-Reward Ratio Guard (Min 1:0.3)
-    MIN_REQUIRED_RRR = 0.2
+    # 🛑 SCALP-OPTIMIZED FILTER 1: Minimum Risk-to-Reward Ratio Guard (Min 1:1.0)
+    MIN_REQUIRED_RRR = 1.0
     if calculated_rrr < MIN_REQUIRED_RRR:
         msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
         print(f"\n{msg}\n")
@@ -988,6 +999,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"\n{msg}\n")
         return False
 
+    # Position Value & Margin Calculation
     pos_value = max_allowed_dollar_risk / (sl_dist_pct / 100.0)
     required_margin = pos_value / leverage
     coin_qty = pos_value / live_price
@@ -1018,6 +1030,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"║ 🔒 MARGIN FROZEN       : ${required_margin:<15.2f} (-{margin_pct*100:.0f}% Available Cap)  ║")
     print(f"║ 🛡️ MAX RISK AMOUNT     : ${dollar_risk:<15.2f} (Strict 1% Total Equity)║")
     print("╚" + "═" * 68 + "╝")
+
 
     # =========================================================
     # 📲 PROFESSIONAL SIGNAL FORMATTER & IMAGE CARD GENERATOR
