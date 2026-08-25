@@ -76,47 +76,14 @@ def get_db_connection():
 def init_db():
     """
     Ensures required tables exist and executes dynamic column migrations
-    for existing legacy production databases.
+    for existing production databases.
     """
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
     ph = "%s" if db_type == "MYSQL" else "?"
 
-    # =========================================================
-    # 🐬 MYSQL SCHEMA DEFINITIONS & SAFE MIGRATIONS
-    # =========================================================
     if db_type == "MYSQL":
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS portfolio (
-            id INT PRIMARY KEY,
-            total_capital DOUBLE,
-            available_capital DOUBLE,
-            frozen_margin DOUBLE
-        )
-        """)
-
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            symbol VARCHAR(20),
-            direction VARCHAR(10),
-            entry_price DOUBLE,
-            sl_price DOUBLE,
-            tp1_price DOUBLE,
-            tp2_price DOUBLE,
-            margin_frozen DOUBLE,
-            pos_value DOUBLE,
-            coin_qty DOUBLE,
-            leverage INT,
-            status VARCHAR(20),
-            exit_reason VARCHAR(255) NULL,
-            close_price DOUBLE NULL,
-            pnl DOUBLE NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )
-        """)
-
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -127,34 +94,12 @@ def init_db():
         )
         """)
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_signals (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            symbol VARCHAR(20),
-            direction VARCHAR(10),
-            entry_price DOUBLE,
-            sl_price DOUBLE,
-            tp1_price DOUBLE,
-            tp2_price DOUBLE,
-            card_base64 LONGTEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
+        # 🛠️ Safe Migrations for MySQL users table
+        try:
+            cursor.execute("ALTER TABLE users CHANGE COLUMN password password_hash VARCHAR(255) NOT NULL")
+        except Exception:
+            pass
 
-        # 🛠️ Safe Migrations for MySQL Trades
-        mysql_trades_cols = [
-            "ADD COLUMN exit_reason VARCHAR(255) NULL",
-            "ADD COLUMN close_price DOUBLE NULL",
-            "ADD COLUMN pnl DOUBLE NULL",
-            "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-        ]
-        for col in mysql_trades_cols:
-            try:
-                cursor.execute(f"ALTER TABLE trades {col}")
-            except Exception:
-                pass
-
-        # 🛠️ Safe Migrations for MySQL Users Table (Fixes 1054 Unknown Column)
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NOT NULL")
         except Exception:
@@ -165,46 +110,7 @@ def init_db():
         except Exception:
             pass
 
-        # Handle legacy schema where column was named 'password'
-        try:
-            cursor.execute("ALTER TABLE users CHANGE COLUMN password password_hash VARCHAR(255) NOT NULL")
-        except Exception:
-            pass
-
-    # =========================================================
-    # 🗄️ SQLITE SCHEMA DEFINITIONS & SAFE MIGRATIONS
-    # =========================================================
     else:
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS portfolio (
-            id INTEGER PRIMARY KEY,
-            total_capital REAL,
-            available_capital REAL,
-            frozen_margin REAL
-        )
-        """)
-
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            direction TEXT,
-            entry_price REAL,
-            sl_price REAL,
-            tp1_price REAL,
-            tp2_price REAL,
-            margin_frozen REAL,
-            pos_value REAL,
-            coin_qty REAL,
-            leverage INTEGER,
-            status TEXT,
-            exit_reason TEXT NULL,
-            close_price REAL NULL,
-            pnl REAL NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,33 +120,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
-
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            direction TEXT,
-            entry_price REAL,
-            sl_price REAL,
-            tp1_price REAL,
-            tp2_price REAL,
-            card_base64 TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # 🛠️ Safe Migrations for SQLite Fallback
-        sqlite_cols = [
-            ("exit_reason", "TEXT"),
-            ("close_price", "REAL"),
-            ("pnl", "REAL"),
-            ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
-        ]
-        for col_name, col_type in sqlite_cols:
-            try:
-                cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
-            except Exception:
-                pass
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL")
@@ -252,18 +131,9 @@ def init_db():
         except Exception:
             pass
 
-    # =========================================================
-    # 💰 PORTFOLIO INITIAL SEED
-    # =========================================================
-    cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
-    if cursor.fetchone()[0] == 0:
-        cursor.execute(
-            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
-            (1,),
-        )
-
     conn.commit()
     conn.close()
+
 
 
 
