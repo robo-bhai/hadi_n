@@ -680,6 +680,9 @@ import requests
 # ---------------------------------------------------------
 # 📡 BROADCAST HELPER FUNCTION
 # ---------------------------------------------------------
+import requests
+
+
 def broadcast_all_signals(trade):
   """Trader engine ke har generated signal ko hadi88.online par broadcast karta hai
 
@@ -687,18 +690,29 @@ def broadcast_all_signals(trade):
   """
   url = "https://hadi88.online/api/signals/broadcast"
 
-  # Trade dictionary se values safely get karein (fallback defaults ke sath)
-  symbol = trade.get("symbol")
-  direction = trade.get("direction", "LONG")
-  entry_price = float(trade.get("entry_price", 0))
-  sl_price = float(trade.get("sl_price", 0))
-  tp1_price = float(trade.get("tp1_price", 0))
-  tp2_price = float(trade.get("tp2_price", 0))
-  card_b64 = trade.get("card_base64", "")
+  # Trade dictionary se values safely extract karein
+  symbol = trade.get("symbol", "")
+  direction = str(trade.get("direction", "LONG")).upper()
+
+  # Safe Float Parsing (None ya invalid values ke crash se bachne ke liye)
+  def safe_float(val):
+    try:
+      return float(val) if val is not None else 0.0
+    except (ValueError, TypeError):
+      return 0.0
+
+  entry_price = safe_float(trade.get("entry_price"))
+  sl_price = safe_float(trade.get("sl_price"))
+  tp1_price = safe_float(trade.get("tp1_price"))
+  tp2_price = safe_float(trade.get("tp2_price"))
+  card_b64 = trade.get("card_base64", "") or ""
+
+  # Dynamic Emoji (LONG ke liye 🟢, SHORT ke liye 🔴)
+  emoji = "🟢" if direction == "LONG" else "🔴"
 
   # Custom notification text
   trade_body = (
-      f"🟢 {direction} {symbol}\n"
+      f"{emoji} {direction} {symbol}\n"
       f"Entry: {entry_price}\n"
       f"SL: {sl_price}\n"
       f"TP1: {tp1_price} | TP2: {tp2_price}"
@@ -717,19 +731,20 @@ def broadcast_all_signals(trade):
 
   try:
     response = requests.post(url, json=payload, timeout=10)
+
     if response.status_code == 200:
       res_data = response.json()
-      print(
-          f" Broadcasting Successful | Topics Sent:"
-          f" {res_data.get('broadcasted_topics_count')}"
-      )
+      topics_count = res_data.get("broadcasted_topics_count", 0)
+      print(f"✅ Broadcasting Successful | Topics Sent: {topics_count}")
     else:
       print(
-          f" Broadcast Failed | Status: {response.status_code} -"
+          f"❌ Broadcast Failed | Status: {response.status_code} -"
           f" {response.text}"
       )
+
   except Exception as e:
-    print(f" Broadcast Connection Error: {e}")
+    print(f"❌ Broadcast Connection Error: {e}")
+
 
 
 
