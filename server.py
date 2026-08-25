@@ -15,8 +15,18 @@ app.secret_key = os.getenv("SECRET_KEY", "hadi88_super_secret_key_2026")
 init_db()
 
 # =========================================================
-# 👤 AUTHENTICATION & USER MANAGEMENT
+# 🔐 AUTHENTICATION & USER MANAGEMENT
 # =========================================================
+
+@app.route("/")
+def home():
+    """
+    Root route redirecting authenticated users to dashboard and guest users to login.
+    """
+    if "user_id" in session:
+        return redirect(url_for("dashboard"))
+    return redirect(url_for("login"))
+
 
 @app.route("/signup", methods=["GET", "POST"])
 def signup():
@@ -47,6 +57,7 @@ def signup():
 
     return render_template("signup.html")
 
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -71,10 +82,12 @@ def login():
 
     return render_template("login.html")
 
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
 
 @app.route("/profile", methods=["GET", "POST"])
 def profile():
@@ -98,7 +111,7 @@ def profile():
     return render_template("profile.html", username=user_info[0], ntfy_topic=user_info[1])
 
 # =========================================================
-# 📊 USER DASHBOARD
+# 📊 USER DASHBOARD & LIVE API
 # =========================================================
 
 @app.route("/dashboard")
@@ -110,21 +123,61 @@ def dashboard():
     cursor = conn.cursor()
     
     # Fully responsive query for both MySQL & SQLite
-    cursor.execute("SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_base64, created_at FROM user_signals ORDER BY id DESC LIMIT 20")
+    cursor.execute("""
+        SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_base64, created_at 
+        FROM user_signals 
+        ORDER BY id DESC LIMIT 20
+    """)
 
     signals = cursor.fetchall()
     conn.close()
 
     return render_template("dashboard.html", signals=signals, username=session.get("username"))
 
+
+@app.route("/api/signals/latest", methods=["GET"])
+def get_latest_signals():
+    """
+    Returns recent signals as JSON for live AJAX dashboard polling.
+    """
+    if "user_id" not in session:
+        return jsonify({"status": "unauthorized"}), 401
+
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_base64, created_at 
+        FROM user_signals 
+        ORDER BY id DESC LIMIT 20
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+
+    signals_list = []
+    for r in rows:
+        signals_list.append({
+            "id": r[0],
+            "symbol": r[1],
+            "direction": r[2],
+            "entry_price": r[3],
+            "sl_price": r[4],
+            "tp1_price": r[5],
+            "tp2_price": r[6],
+            "card_base64": r[7],
+            "created_at": str(r[8])
+        })
+
+    return jsonify({"status": "success", "signals": signals_list}), 200
+
 # =========================================================
-# 🚀 SIGNAL BROADCAST ENDPOINT (TRADER ENGINE CALLS THIS)
+# 📢 SIGNAL BROADCAST ENDPOINT (TRADER ENGINE CALLS THIS)
 # =========================================================
 
 @app.route("/api/signals/broadcast", methods=["POST"])
 def broadcast_signal():
     """
-    Trader engine signal receive karke DB mein save karta he aur sare Users ke NTFY topics par push kar deta he.
+    Trader engine receives signal, saves to database, and broadcasts to user NTFY topics.
     """
     data = request.json or {}
     symbol = data.get("symbol")
@@ -188,5 +241,7 @@ def broadcast_signal():
 
     return jsonify({"status": "success", "broadcasted_topics_count": len(user_topics)}), 200
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
