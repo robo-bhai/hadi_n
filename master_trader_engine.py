@@ -1278,6 +1278,9 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         # =========================================================================
     # 2. 🌐 Broadcast Signal to Web App & Server FIRST (Save DB se pehle)
     # =========================================================================
+    # =========================================================================
+    # 2. 🌐 Broadcast Signal to Web App & Server FIRST (Save DB se pehle)
+    # =========================================================================
     try:
         print("🔄 Initiating signal broadcast...")
         
@@ -1290,6 +1293,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
             "tp1_price": float(tp1_price) if tp1_price is not None else 0.0,
             "tp2_price": float(tp2_price) if tp2_price is not None else 0.0,
             "card_base64": card_base64_str or "",
+            "trade_body": trade_body or "",  # 👈 Fixed: Server validation aur ntfy broadcast ke liye trade_body pass karna uri hai
         }
 
         broadcast_all_signals(broadcast_payload)
@@ -1299,6 +1303,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"❌ Broadcast Execution Error: {br_err}")
         print("🔍 Traceback Details:")
         traceback.print_exc()
+
 
     # =========================================================================
     # 3. 💾 Save Executed Trade to DB (Broadcast ke baad)
