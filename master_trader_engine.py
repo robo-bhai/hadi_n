@@ -165,16 +165,19 @@ def get_db_connection():
 
 def init_db():
     """
-    Ensures required tables (portfolio, trades) exist in MySQL/SQLite.
-    Handles dynamic column migrations for existing MySQL production databases.
+    Ensures required tables (portfolio, trades, users, user_signals) exist in MySQL/SQLite.
+    Handles dynamic column migrations for existing MySQL & SQLite production databases.
     """
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
     ph = "%s" if db_type == "MYSQL" else "?"
 
-    # Create Portfolio & Trades Tables
+    # =========================================================
+    # 🐬 MYSQL SCHEMA DEFINITIONS & SAFE MIGRATIONS
+    # =========================================================
     if db_type == "MYSQL":
+        # 1. Portfolio Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INT PRIMARY KEY,
@@ -183,6 +186,8 @@ def init_db():
             frozen_margin DOUBLE
         )
         """)
+
+        # 2. Trades Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -204,7 +209,33 @@ def init_db():
         )
         """)
 
-        # 🛠️ Safe Migration: Existing MySQL Table Par Columns Add Karna
+        # 3. Users Table (Authentication & Custom NTFY Topics)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            ntfy_topic VARCHAR(100) NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 4. User Signals Table (Live Signals & Base64 Cards for Web Dashboard)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_signals (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20),
+            direction VARCHAR(10),
+            entry_price DOUBLE,
+            sl_price DOUBLE,
+            tp1_price DOUBLE,
+            tp2_price DOUBLE,
+            card_base64 LONGTEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 🛠️ Safe Migration: Existing MySQL Trades Table Columns
         mysql_columns_to_add = [
             "ADD COLUMN exit_reason VARCHAR(255) NULL",
             "ADD COLUMN close_price DOUBLE NULL",
@@ -216,8 +247,19 @@ def init_db():
             try:
                 cursor.execute(f"ALTER TABLE trades {col_statement}")
             except Exception:
-                pass  # Column pehle se majood hone par error skip karega
+                pass  # Skip if column already exists
+
+        # Safe Migration for Users Table (if ntfy_topic missing in older users table)
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic VARCHAR(100) NULL")
+        except Exception:
+            pass
+
+    # =========================================================
+    # 🗄️ SQLITE SCHEMA DEFINITIONS & SAFE MIGRATIONS (FALLBACK)
+    # =========================================================
     else:
+        # 1. Portfolio Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY,
@@ -226,6 +268,8 @@ def init_db():
             frozen_margin REAL
         )
         """)
+
+        # 2. Trades Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,7 +291,33 @@ def init_db():
         )
         """)
 
-        # 🛠️ Safe Migration: SQLite Fallback DB Ke Liye
+        # 3. Users Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            ntfy_topic TEXT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 4. User Signals Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            direction TEXT,
+            entry_price REAL,
+            sl_price REAL,
+            tp1_price REAL,
+            tp2_price REAL,
+            card_base64 TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 🛠️ Safe Migration: SQLite Fallback DB
         sqlite_columns = [
             ("exit_reason", "TEXT"),
             ("close_price", "REAL"),
@@ -256,13 +326,18 @@ def init_db():
         ]
         for col_name, col_type in sqlite_columns:
             try:
-                cursor.execute(
-                    f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"
-                )
+                cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass
 
-    # Check Portfolio Record 1
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic TEXT NULL")
+        except Exception:
+            pass
+
+    # =========================================================
+    # 💰 PORTFOLIO INITIAL SEED RECORD
+    # =========================================================
     cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
     if cursor.fetchone()[0] == 0:
         cursor.execute(
@@ -276,7 +351,6 @@ def init_db():
 
 # Initialize DB structure on load
 init_db()
-
 
 
 # =========================================================
@@ -1105,19 +1179,14 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
         send_ex_trade_signal(trade_title, trade_body, None)
 
-    # 💾 Save Executed Trade to DB (Safe Block)
-    try:
-        save_trade_to_db({
-            'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
-            'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
-            'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
-            'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
-        })
-    except Exception as db_err:
-        print(f"❌ Database Save Error: {db_err} (Lekin Webhook Signal already dispatch ho chuka hai)")
-
+    # 💾 Save Executed Trade to DB
+    save_trade_to_db({
+        'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
+        'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
+        'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
+        'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
+    })
     return True
-
 
 
 
