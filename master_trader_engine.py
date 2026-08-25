@@ -1105,14 +1105,19 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
         send_ex_trade_signal(trade_title, trade_body, None)
 
-    # 💾 Save Executed Trade to DB
-    save_trade_to_db({
-        'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
-        'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
-        'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
-        'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
-    })
+    # 💾 Save Executed Trade to DB (Safe Block)
+    try:
+        save_trade_to_db({
+            'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
+            'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
+            'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
+            'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
+        })
+    except Exception as db_err:
+        print(f"❌ Database Save Error: {db_err} (Lekin Webhook Signal already dispatch ho chuka hai)")
+
     return True
+
 
 
 
