@@ -18,7 +18,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "hadi88_super_secret_key_2026")
 
 
 # =========================================================
-# 🗄️ DATABASE MANAGEMENT (INTEGRATED)
+# 🗄️ DATABASE MANAGEMENT (INTEGRATED & ISOLATED)
 # =========================================================
 
 def get_db_connection():
@@ -75,17 +75,52 @@ def get_db_connection():
 
 def init_db():
     """
-    Ensures required tables exist and executes dynamic column migrations
-    for existing production databases.
+    Ensures required tables exist using users_v2 to preserve existing table data.
     """
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
     ph = "%s" if db_type == "MYSQL" else "?"
 
+    # =========================================================
+    # 🐬 MYSQL SCHEMA DEFINITIONS
+    # =========================================================
     if db_type == "MYSQL":
+        # 1. Portfolio Table
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INT PRIMARY KEY,
+            total_capital DOUBLE,
+            available_capital DOUBLE,
+            frozen_margin DOUBLE
+        )
+        """)
+
+        # 2. Trades Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20),
+            direction VARCHAR(10),
+            entry_price DOUBLE,
+            sl_price DOUBLE,
+            tp1_price DOUBLE,
+            tp2_price DOUBLE,
+            margin_frozen DOUBLE,
+            pos_value DOUBLE,
+            coin_qty DOUBLE,
+            leverage INT,
+            status VARCHAR(20),
+            exit_reason VARCHAR(255) NULL,
+            close_price DOUBLE NULL,
+            pnl DOUBLE NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 3. New Isolated Users Table (Preserves original 'users' table)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users_v2 (
             id INT AUTO_INCREMENT PRIMARY KEY,
             username VARCHAR(100) UNIQUE NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
@@ -94,25 +129,74 @@ def init_db():
         )
         """)
 
-        # 🛠️ Safe Migrations for MySQL users table
-        try:
-            cursor.execute("ALTER TABLE users CHANGE COLUMN password password_hash VARCHAR(255) NOT NULL")
-        except Exception:
-            pass
-
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NOT NULL")
-        except Exception:
-            pass
-
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic VARCHAR(100) NULL")
-        except Exception:
-            pass
-
-    else:
+        # 4. User Signals Table
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS user_signals (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            symbol VARCHAR(20),
+            direction VARCHAR(10),
+            entry_price DOUBLE,
+            sl_price DOUBLE,
+            tp1_price DOUBLE,
+            tp2_price DOUBLE,
+            card_base64 LONGTEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 🛠️ Safe Migrations for MySQL Trades
+        mysql_columns_to_add = [
+            "ADD COLUMN exit_reason VARCHAR(255) NULL",
+            "ADD COLUMN close_price DOUBLE NULL",
+            "ADD COLUMN pnl DOUBLE NULL",
+            "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+        ]
+
+        for col_statement in mysql_columns_to_add:
+            try:
+                cursor.execute(f"ALTER TABLE trades {col_statement}")
+            except Exception:
+                pass
+
+    # =========================================================
+    # 🗄️ SQLITE SCHEMA DEFINITIONS (FALLBACK)
+    # =========================================================
+    else:
+        # 1. Portfolio Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INTEGER PRIMARY KEY,
+            total_capital REAL,
+            available_capital REAL,
+            frozen_margin REAL
+        )
+        """)
+
+        # 2. Trades Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            direction TEXT,
+            entry_price REAL,
+            sl_price REAL,
+            tp1_price REAL,
+            tp2_price REAL,
+            margin_frozen REAL,
+            pos_value REAL,
+            coin_qty REAL,
+            leverage INTEGER,
+            status TEXT,
+            exit_reason TEXT NULL,
+            close_price REAL NULL,
+            pnl REAL NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # 3. New Isolated Users Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users_v2 (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
@@ -121,20 +205,50 @@ def init_db():
         )
         """)
 
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL")
-        except Exception:
-            pass
+        # 4. User Signals Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            direction TEXT,
+            entry_price REAL,
+            sl_price REAL,
+            tp1_price REAL,
+            tp2_price REAL,
+            card_base64 TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic TEXT NULL")
-        except Exception:
-            pass
+        # 🛠️ Safe Migrations for SQLite
+        sqlite_columns = [
+            ("exit_reason", "TEXT"),
+            ("close_price", "REAL"),
+            ("pnl", "REAL"),
+            ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+        ]
+        for col_name, col_type in sqlite_columns:
+            try:
+                cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
+    # =========================================================
+    # 💰 PORTFOLIO INITIAL SEED RECORD
+    # =========================================================
+    cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            f"INSERT INTO portfolio (id, total_capital, available_capital, frozen_margin) VALUES ({ph}, 100.0, 100.0, 0.0)",
+            (1,),
+        )
 
     conn.commit()
     conn.close()
 
 
+# Auto Initialize DB schemas on server boot
+init_db()
 
 
 # =========================================================
@@ -158,7 +272,7 @@ def signup():
 
         try:
             cursor.execute(
-                f"INSERT INTO users (username, password_hash, ntfy_topic) VALUES ({ph}, {ph}, {ph})",
+                f"INSERT INTO users_v2 (username, password_hash, ntfy_topic) VALUES ({ph}, {ph}, {ph})",
                 (username, hashed_pass, ntfy_topic)
             )
             conn.commit()
@@ -181,7 +295,7 @@ def login():
         cursor = conn.cursor()
         ph = "%s" if db_type == "MYSQL" else "?"
 
-        cursor.execute(f"SELECT id, password_hash, ntfy_topic FROM users WHERE username = {ph}", (username,))
+        cursor.execute(f"SELECT id, password_hash, ntfy_topic FROM users_v2 WHERE username = {ph}", (username,))
         row = cursor.fetchone()
         conn.close()
 
@@ -211,11 +325,11 @@ def profile():
 
     if request.method == "POST":
         new_ntfy = request.form.get("ntfy_topic", "").strip()
-        cursor.execute(f"UPDATE users SET ntfy_topic = {ph} WHERE id = {ph}", (new_ntfy, session["user_id"]))
+        cursor.execute(f"UPDATE users_v2 SET ntfy_topic = {ph} WHERE id = {ph}", (new_ntfy, session["user_id"]))
         conn.commit()
         session["ntfy_topic"] = new_ntfy
 
-    cursor.execute(f"SELECT username, ntfy_topic FROM users WHERE id = {ph}", (session["user_id"],))
+    cursor.execute(f"SELECT username, ntfy_topic FROM users_v2 WHERE id = {ph}", (session["user_id"],))
     user_info = cursor.fetchone()
     conn.close()
 
@@ -274,8 +388,8 @@ def broadcast_signal():
     """, (symbol, direction, entry_price, sl_price, tp1_price, tp2_price, card_b64))
     conn.commit()
 
-    # 2. Fetch all User-Configured NTFY Topics
-    cursor.execute("SELECT ntfy_topic FROM users WHERE ntfy_topic IS NOT NULL AND ntfy_topic != ''")
+    # 2. Fetch all User-Configured NTFY Topics from users_v2
+    cursor.execute("SELECT ntfy_topic FROM users_v2 WHERE ntfy_topic IS NOT NULL AND ntfy_topic != ''")
     user_topics = [row[0] for row in cursor.fetchall()]
     conn.close()
 
