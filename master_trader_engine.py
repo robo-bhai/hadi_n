@@ -1227,42 +1227,65 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     # 🖼️ Send Image Card + Message strictly to HARDCODED Topic ('lskejej_hdhehje')
     # 🖼️ Generate Signal Card Image & Convert to Base64
-   # card_base64_str = ""
+    # =========================================================
+    # 🎯 TRADE EXECUTION & DB SAVE BLOCK
+    # =========================================================
+
+    # 🖼️ Generate Signal Card Image & Convert to Base64
+    card_base64_str = ""  # Variable define hona zaroori hai
     try:
-        card_png_bytes = generate_signal_card(
-            symbol=symbol_input, direction=direction, leverage=leverage,
-            live_price=live_price, sl_price=sl_price, tp1_price=tp1_price,
-            tp2_price=tp2_price, margin=required_margin, pos_value=pos_value,
-            net_tp1=net_profit_tp1, net_tp2=net_profit_tp2, rrr=calculated_rrr
-        )
-        if card_png_bytes:
-            card_base64_str = base64.b64encode(card_png_bytes).decode('utf-8')
-        send_ex_trade_signal(trade_title, trade_body, card_png_bytes)
+      card_png_bytes = generate_signal_card(
+          symbol=symbol_input,
+          direction=direction,
+          leverage=leverage,
+          live_price=live_price,
+          sl_price=sl_price,
+          tp1_price=tp1_price,
+          tp2_price=tp2_price,
+          margin=required_margin,
+          pos_value=pos_value,
+          net_tp1=net_profit_tp1,
+          net_tp2=net_profit_tp2,
+          rrr=calculated_rrr,
+      )
+      if card_png_bytes:
+        card_base64_str = base64.b64encode(card_png_bytes).decode("utf-8")
+      send_ex_trade_signal(trade_title, trade_body, card_png_bytes)
     except Exception as e:
-        print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
-        send_ex_trade_signal(trade_title, trade_body, None)
+      print(
+          f"⚠️ Image attachment error: {e}. Falling back to text-only signal."
+      )
+      send_ex_trade_signal(trade_title, trade_body, None)
 
     # 💾 Save Executed Trade to DB
     save_trade_to_db({
-        'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
-        'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
-        'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
-        'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
+        "symbol": symbol_input,
+        "direction": direction,
+        "entry_price": live_price,
+        "sl_price": sl_price,
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "margin_frozen": required_margin,
+        "pos_value": pos_value,
+        "coin_qty": coin_qty,
+        "leverage": leverage,
+        "available_cap": port["available"],
+        "frozen_cap": port["frozen"],
     })
 
     # 🌐 Broadcast Signal to Web App & NTFY Users
     broadcast_all_signals({
-        'symbol': symbol_input,
-        'direction': direction,
-        'entry_price': live_price,
-        'sl_price': sl_price,
-        'tp1_price': tp1_price,
-        'tp2_price': tp2_price,
-        'card_base64': card_base64_str
+        "symbol": symbol_input,
+        "direction": direction,
+        "entry_price": live_price,
+        "sl_price": sl_price,
+        "tp1_price": tp1_price,
+        "tp2_price": tp2_price,
+        "card_base64": card_base64_str,
     })
-    broadcast_all_signals(trade_data)
 
     return True
+
 
 
 
