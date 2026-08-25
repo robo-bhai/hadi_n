@@ -75,8 +75,8 @@ def get_db_connection():
 
 def init_db():
     """
-    Ensures required tables (portfolio, trades, users, user_signals) exist in MySQL/SQLite.
-    Handles dynamic column migrations for existing MySQL & SQLite production databases.
+    Ensures required tables exist and executes dynamic column migrations
+    for existing legacy production databases.
     """
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
@@ -87,7 +87,6 @@ def init_db():
     # 🐬 MYSQL SCHEMA DEFINITIONS & SAFE MIGRATIONS
     # =========================================================
     if db_type == "MYSQL":
-        # 1. Portfolio Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INT PRIMARY KEY,
@@ -97,7 +96,6 @@ def init_db():
         )
         """)
 
-        # 2. Trades Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -119,7 +117,6 @@ def init_db():
         )
         """)
 
-        # 3. Users Table (Authentication & Custom NTFY Topics)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -130,7 +127,6 @@ def init_db():
         )
         """)
 
-        # 4. User Signals Table (Live Signals & Base64 Cards for Web Dashboard)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_signals (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -145,31 +141,40 @@ def init_db():
         )
         """)
 
-        # 🛠️ Safe Migration: Existing MySQL Trades Table Columns
-        mysql_columns_to_add = [
+        # 🛠️ Safe Migrations for MySQL Trades
+        mysql_trades_cols = [
             "ADD COLUMN exit_reason VARCHAR(255) NULL",
             "ADD COLUMN close_price DOUBLE NULL",
             "ADD COLUMN pnl DOUBLE NULL",
             "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
         ]
-
-        for col_statement in mysql_columns_to_add:
+        for col in mysql_trades_cols:
             try:
-                cursor.execute(f"ALTER TABLE trades {col_statement}")
+                cursor.execute(f"ALTER TABLE trades {col}")
             except Exception:
-                pass  # Skip if column already exists
+                pass
 
-        # Safe Migration for Users Table (if ntfy_topic missing in older users table)
+        # 🛠️ Safe Migrations for MySQL Users Table (Fixes 1054 Unknown Column)
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NOT NULL")
+        except Exception:
+            pass
+
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic VARCHAR(100) NULL")
         except Exception:
             pass
 
+        # Handle legacy schema where column was named 'password'
+        try:
+            cursor.execute("ALTER TABLE users CHANGE COLUMN password password_hash VARCHAR(255) NOT NULL")
+        except Exception:
+            pass
+
     # =========================================================
-    # 🗄️ SQLITE SCHEMA DEFINITIONS & SAFE MIGRATIONS (FALLBACK)
+    # 🗄️ SQLITE SCHEMA DEFINITIONS & SAFE MIGRATIONS
     # =========================================================
     else:
-        # 1. Portfolio Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY,
@@ -179,7 +184,6 @@ def init_db():
         )
         """)
 
-        # 2. Trades Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,7 +205,6 @@ def init_db():
         )
         """)
 
-        # 3. Users Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,7 +215,6 @@ def init_db():
         )
         """)
 
-        # 4. User Signals Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,18 +229,23 @@ def init_db():
         )
         """)
 
-        # 🛠️ Safe Migration: SQLite Fallback DB
-        sqlite_columns = [
+        # 🛠️ Safe Migrations for SQLite Fallback
+        sqlite_cols = [
             ("exit_reason", "TEXT"),
             ("close_price", "REAL"),
             ("pnl", "REAL"),
             ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
         ]
-        for col_name, col_type in sqlite_columns:
+        for col_name, col_type in sqlite_cols:
             try:
                 cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass
+
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL")
+        except Exception:
+            pass
 
         try:
             cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic TEXT NULL")
@@ -246,7 +253,7 @@ def init_db():
             pass
 
     # =========================================================
-    # 💰 PORTFOLIO INITIAL SEED RECORD
+    # 💰 PORTFOLIO INITIAL SEED
     # =========================================================
     cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
     if cursor.fetchone()[0] == 0:
@@ -258,9 +265,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-
-# Auto Initialize DB schemas on server boot
-init_db()
 
 
 # =========================================================
