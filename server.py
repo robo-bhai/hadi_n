@@ -6,7 +6,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, s
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # Dynamic Database Import (Uses your existing get_db_connection setup)
-from trader_engine import get_db_connection, init_db
+from master_trader_engine import get_db_connection, init_db
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "hadi88_super_secret_key_2026")
