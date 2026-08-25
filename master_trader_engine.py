@@ -674,6 +674,64 @@ def check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=2):
 
     return False, ""
 
+import requests
+
+
+# ---------------------------------------------------------
+# 📡 BROADCAST HELPER FUNCTION
+# ---------------------------------------------------------
+def broadcast_all_signals(trade):
+  """Trader engine ke har generated signal ko hadi88.online par broadcast karta hai
+
+  aur users_v2 database ecosystem ke user_signals table mein save karwata hai.
+  """
+  url = "https://hadi88.online/api/signals/broadcast"
+
+  # Trade dictionary se values safely get karein (fallback defaults ke sath)
+  symbol = trade.get("symbol")
+  direction = trade.get("direction", "LONG")
+  entry_price = float(trade.get("entry_price", 0))
+  sl_price = float(trade.get("sl_price", 0))
+  tp1_price = float(trade.get("tp1_price", 0))
+  tp2_price = float(trade.get("tp2_price", 0))
+  card_b64 = trade.get("card_base64", "")
+
+  # Custom notification text
+  trade_body = (
+      f"🟢 {direction} {symbol}\n"
+      f"Entry: {entry_price}\n"
+      f"SL: {sl_price}\n"
+      f"TP1: {tp1_price} | TP2: {tp2_price}"
+  )
+
+  payload = {
+      "symbol": symbol,
+      "direction": direction,
+      "entry_price": entry_price,
+      "sl_price": sl_price,
+      "tp1_price": tp1_price,
+      "tp2_price": tp2_price,
+      "card_base64": card_b64,
+      "trade_body": trade_body,
+  }
+
+  try:
+    response = requests.post(url, json=payload, timeout=10)
+    if response.status_code == 200:
+      res_data = response.json()
+      print(
+          f" Broadcasting Successful | Topics Sent:"
+          f" {res_data.get('broadcasted_topics_count')}"
+      )
+    else:
+      print(
+          f" Broadcast Failed | Status: {response.status_code} -"
+          f" {response.text}"
+      )
+  except Exception as e:
+    print(f" Broadcast Connection Error: {e}")
+
+
 
 
 # ------------------------------------------------------------------------------
@@ -1167,6 +1225,8 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     # =========================================================
 
     # 🖼️ Send Image Card + Message strictly to HARDCODED Topic ('lskejej_hdhehje')
+    # 🖼️ Generate Signal Card Image & Convert to Base64
+   # card_base64_str = ""
     try:
         card_png_bytes = generate_signal_card(
             symbol=symbol_input, direction=direction, leverage=leverage,
@@ -1174,6 +1234,8 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
             tp2_price=tp2_price, margin=required_margin, pos_value=pos_value,
             net_tp1=net_profit_tp1, net_tp2=net_profit_tp2, rrr=calculated_rrr
         )
+        if card_png_bytes:
+            card_base64_str = base64.b64encode(card_png_bytes).decode('utf-8')
         send_ex_trade_signal(trade_title, trade_body, card_png_bytes)
     except Exception as e:
         print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
@@ -1186,7 +1248,20 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
         'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
     })
+
+    # 🌐 Broadcast Signal to Web App & NTFY Users
+    broadcast_all_signals({
+        'symbol': symbol_input,
+        'direction': direction,
+        'entry_price': live_price,
+        'sl_price': sl_price,
+        'tp1_price': tp1_price,
+        'tp2_price': tp2_price,
+        'card_base64': card_base64_str
+    })
+
     return True
+
 
 
 
