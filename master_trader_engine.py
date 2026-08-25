@@ -959,7 +959,11 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     target_rrr = 1.2
 
     if direction == "LONG":
-        sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
+        raw_sl = min(live_price - atr_sl_buffer, support_4h * 0.995)
+        # 🛡️ SL Cap Guard: Max 4.0% distance clamp for LONG
+        max_sl_dist = live_price * 0.04
+        sl_price = max(raw_sl, live_price - max_sl_dist)
+        
         risk_dist = live_price - sl_price
         
         # Enforce minimum TP1 distance based on 1.2 RRR
@@ -972,7 +976,11 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         breakeven_lock_level = tp1_price
 
     elif direction == "SHORT":
-        sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
+        raw_sl = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
+        # 🛡️ SL Cap Guard: Max 4.0% distance clamp for SHORT
+        max_sl_dist = live_price * 0.04
+        sl_price = min(raw_sl, live_price + max_sl_dist)
+        
         risk_dist = sl_price - live_price
         
         # Enforce minimum TP1 distance based on 1.2 RRR
