@@ -28,19 +28,19 @@ jobs:
           pip install flask mysql-connector-python pandas requests gunicorn Flask-HTTPAuth werkzeug Pillow
           
           # Install Cloudflared CLI
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb
 
       - name: Launch Production Server via Gunicorn (Background)
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
-          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_PASS: ${{ secrets._PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: |
           echo "Starting Gunicorn WSGI Server in background..."
-          nohup gunicorn -w 2 -b 0.0.0.0:5000 server:app > flask.log 2>&1 &
+          nohup gunicorn -w 2 -b 0.0.0.0:6000 server:app > flask.log 2>&1 &
           echo "Waiting 5 seconds for server boot..."
           sleep 5
           cat flask.log
