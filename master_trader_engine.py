@@ -165,19 +165,16 @@ def get_db_connection():
 
 def init_db():
     """
-    Ensures required tables (portfolio, trades, users, user_signals) exist in MySQL/SQLite.
-    Handles dynamic column migrations for existing MySQL & SQLite production databases.
+    Ensures required tables (portfolio, trades) exist in MySQL/SQLite.
+    Handles dynamic column migrations for existing MySQL production databases.
     """
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
     ph = "%s" if db_type == "MYSQL" else "?"
 
-    # =========================================================
-    # 🐬 MYSQL SCHEMA DEFINITIONS & SAFE MIGRATIONS
-    # =========================================================
+    # Create Portfolio & Trades Tables
     if db_type == "MYSQL":
-        # 1. Portfolio Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INT PRIMARY KEY,
@@ -186,8 +183,6 @@ def init_db():
             frozen_margin DOUBLE
         )
         """)
-
-        # 2. Trades Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -209,33 +204,7 @@ def init_db():
         )
         """)
 
-        # 3. Users Table (Authentication & Custom NTFY Topics)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(100) UNIQUE NOT NULL,
-            password_hash VARCHAR(255) NOT NULL,
-            ntfy_topic VARCHAR(100) NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # 4. User Signals Table (Live Signals & Base64 Cards for Web Dashboard)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_signals (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            symbol VARCHAR(20),
-            direction VARCHAR(10),
-            entry_price DOUBLE,
-            sl_price DOUBLE,
-            tp1_price DOUBLE,
-            tp2_price DOUBLE,
-            card_base64 LONGTEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # 🛠️ Safe Migration: Existing MySQL Trades Table Columns
+        # 🛠️ Safe Migration: Existing MySQL Table Par Columns Add Karna
         mysql_columns_to_add = [
             "ADD COLUMN exit_reason VARCHAR(255) NULL",
             "ADD COLUMN close_price DOUBLE NULL",
@@ -247,19 +216,8 @@ def init_db():
             try:
                 cursor.execute(f"ALTER TABLE trades {col_statement}")
             except Exception:
-                pass  # Skip if column already exists
-
-        # Safe Migration for Users Table (if ntfy_topic missing in older users table)
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic VARCHAR(100) NULL")
-        except Exception:
-            pass
-
-    # =========================================================
-    # 🗄️ SQLITE SCHEMA DEFINITIONS & SAFE MIGRATIONS (FALLBACK)
-    # =========================================================
+                pass  # Column pehle se majood hone par error skip karega
     else:
-        # 1. Portfolio Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY,
@@ -268,8 +226,6 @@ def init_db():
             frozen_margin REAL
         )
         """)
-
-        # 2. Trades Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -291,33 +247,7 @@ def init_db():
         )
         """)
 
-        # 3. Users Table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            ntfy_topic TEXT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # 4. User Signals Table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            direction TEXT,
-            entry_price REAL,
-            sl_price REAL,
-            tp1_price REAL,
-            tp2_price REAL,
-            card_base64 TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # 🛠️ Safe Migration: SQLite Fallback DB
+        # 🛠️ Safe Migration: SQLite Fallback DB Ke Liye
         sqlite_columns = [
             ("exit_reason", "TEXT"),
             ("close_price", "REAL"),
@@ -326,18 +256,13 @@ def init_db():
         ]
         for col_name, col_type in sqlite_columns:
             try:
-                cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
+                cursor.execute(
+                    f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}"
+                )
             except Exception:
                 pass
 
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN ntfy_topic TEXT NULL")
-        except Exception:
-            pass
-
-    # =========================================================
-    # 💰 PORTFOLIO INITIAL SEED RECORD
-    # =========================================================
+    # Check Portfolio Record 1
     cursor.execute(f"SELECT COUNT(*) FROM portfolio WHERE id = {ph}", (1,))
     if cursor.fetchone()[0] == 0:
         cursor.execute(
@@ -351,6 +276,7 @@ def init_db():
 
 # Initialize DB structure on load
 init_db()
+
 
 
 # =========================================================
@@ -674,79 +600,6 @@ def check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=2):
 
     return False, ""
 
-import requests
-
-
-# ---------------------------------------------------------
-# 📡 BROADCAST HELPER FUNCTION
-# ---------------------------------------------------------
-import requests
-
-
-def broadcast_all_signals(trade):
-  """Trader engine ke har generated signal ko hadi88.online par broadcast karta hai
-
-  aur users_v2 database ecosystem ke user_signals table mein save karwata hai.
-  """
-  url = "https://hadi88.online/api/signals/broadcast"
-
-  # Trade dictionary se values safely extract karein
-  symbol = trade.get("symbol", "")
-  direction = str(trade.get("direction", "LONG")).upper()
-
-  # Safe Float Parsing (None ya invalid values ke crash se bachne ke liye)
-  def safe_float(val):
-    try:
-      return float(val) if val is not None else 0.0
-    except (ValueError, TypeError):
-      return 0.0
-
-  entry_price = safe_float(trade.get("entry_price"))
-  sl_price = safe_float(trade.get("sl_price"))
-  tp1_price = safe_float(trade.get("tp1_price"))
-  tp2_price = safe_float(trade.get("tp2_price"))
-  card_b64 = trade.get("card_base64", "") or ""
-
-  # Dynamic Emoji (LONG ke liye 🟢, SHORT ke liye 🔴)
-  emoji = "🟢" if direction == "LONG" else "🔴"
-
-  # Custom notification text
-  trade_body = (
-      f"{emoji} {direction} {symbol}\n"
-      f"Entry: {entry_price}\n"
-      f"SL: {sl_price}\n"
-      f"TP1: {tp1_price} | TP2: {tp2_price}"
-  )
-
-  payload = {
-      "symbol": symbol,
-      "direction": direction,
-      "entry_price": entry_price,
-      "sl_price": sl_price,
-      "tp1_price": tp1_price,
-      "tp2_price": tp2_price,
-      "card_base64": card_b64,
-      "trade_body": trade_body,
-  }
-
-  try:
-    response = requests.post(url, json=payload, timeout=10)
-
-    if response.status_code == 200:
-      res_data = response.json()
-      topics_count = res_data.get("broadcasted_topics_count", 0)
-      print(f"✅ Broadcasting Successful | Topics Sent: {topics_count}")
-    else:
-      print(
-          f"❌ Broadcast Failed | Status: {response.status_code} -"
-          f" {response.text}"
-      )
-
-  except Exception as e:
-    print(f"❌ Broadcast Connection Error: {e}")
-
-
-
 
 
 # ------------------------------------------------------------------------------
@@ -876,6 +729,7 @@ def generate_signal_card(symbol, direction, leverage, live_price, sl_price, tp1_
     img.save(img_byte_arr, format='PNG')
     return img_byte_arr.getvalue()
 
+
 def process_trade_logic(symbol_input, base_risk_pct=1.5):
     """
     Main Trader Engine execution logic with Scalp-Optimized Dynamic Key-Level RRR (Min 1:0.3) & Strict 1% Total Risk Guard.
@@ -889,6 +743,50 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"💼 PORTFOLIO: Total: ${port['total']:.2f} | Available: ${port['available']:.2f} | Frozen: ${port['frozen']:.2f}")
     print(f"📊 ACTIVE TRADES IN DB: {active_count}/5")
     print("=" * 70)
+    # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
+    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=5)
+    if is_halted:
+        msg = f"🛑 EMERGENCY STOP: {halt_reason}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🛑 [DAILY CIRCUIT BREAKER] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
+    if active_count >= 5:
+        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 5 Active Trades limit reached ({active_count}/5)."
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 2: Low Available Capital
+    if port['available'] < 5.0:
+        msg = f"❌ Low Available Capital (${port['available']:.2f} USDT). Cannot place trade."
+        print(msg)
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 3: Duplicate Active Pair Check
+    if is_coin_trade_active(symbol_input):
+        msg = f"❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 3.5: Dynamic Cooldown Check (SL = 24H | TP = 4H)
+    is_blocked, cooldown_msg = check_dynamic_cooldown(symbol_input)
+    if is_blocked:
+        msg = f"🚫 TRADE REJECTED: [{symbol_input}] - {cooldown_msg}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [DYNAMIC COOLDOWN] {symbol_input}", msg)
+        return False
+
+    # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
+    corr_risk, corr_msg = check_correlation_exposure(symbol_input)
+    if corr_risk:
+        msg = f"⚠️ CORRELATION BLOCKED: {corr_msg}"
+        print(f"\n{msg}\n")
+        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
+        return False
 
     print(f"\n⏳ Fetching Live Market Data, Orderbook Depth & OI for [{symbol_input}]...")
     
@@ -926,14 +824,11 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     atr_pct = (atr_val / live_price) * 100
     if atr_pct > 3.5:  
-        volatility_state = "HIGH ⚡"
+        volatility_state, leverage = "HIGH ⚡", 1
     elif atr_pct < 1.2:  
-        volatility_state = "LOW 🧊"
+        volatility_state, leverage = "LOW 🧊", 3
     else:
-        volatility_state = "NORMAL 🟢"
-
-    leverage = 1  # 🔒 Hardcoded 1x Spot-Style Leverage
-
+        volatility_state, leverage = "NORMAL 🟢", 2
 
     # =========================================================
     # 🎯 FULLY SYNCED QUANT SCORING ENGINE
@@ -986,43 +881,36 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         score -= 15
         reasons.append(f"Long Flush Scent ({funding_rate:.4f}%) (-15)")
 
-    # Initializing status and direction variables cleanly
     trade_possible = True
     direction = "NONE"
-    status_msg = ""
 
-    # 1. Base Score Direction Check
     if score >= 58:
-        direction = "LONG"
+        if btc_regime == "BEARISH" and symbol_input != "BTCUSDT":
+            trade_possible = False
+            status_msg = "⚠️ NO TRADE: Macro BTC Trend is BEARISH"
+        else:
+            direction = "LONG"
     elif score <= 42:
-        direction = "SHORT"
+        if btc_regime == "BULLISH" and symbol_input != "BTCUSDT":
+            trade_possible = False
+            status_msg = "⚠️ NO TRADE: Macro BTC Trend is BULLISH"
+        else:
+            direction = "SHORT"
     else:
         trade_possible = False
         status_msg = "💤 NO TRADE: Score in Chop Zone (42-57)"
 
-    # 2. Strict Long-Only Guard
-    if trade_possible and direction == "SHORT":
-        trade_possible = False
-        status_msg = "🚫 SHORT TRADE BLOCKED: System is configured for LONG-ONLY trades."
-
-    # 3. Macro BTC Trend Guard
-    if trade_possible:
-        if direction == "LONG" and btc_regime == "BEARISH" and symbol_input != "BTCUSDT":
-            trade_possible = False
-            status_msg = "⚠️ NO TRADE: Macro BTC Trend is BEARISH"
-
-    # 4. Micro Timeframe Alignment & Bypass Guard
     if trade_possible:
         micro_15m = check_micro_momentum(df_15m, direction)
         micro_5m = check_micro_momentum(df_5m, direction)
 
         if not (micro_15m or micro_5m):
-            # High Quant Score Bypass Guard
+            # 💡 High Quant Score Bypass Guard
             if (direction == "LONG" and score >= 70) or (direction == "SHORT" and score <= 30):
                 print(f"⚡ High Score ({score}): Overriding Micro-Delay for Instant Execution!")
             else:
                 trade_possible = False
-                status_msg = "⏳ NO TRADE: Waiting for Micro-Timeframe Alignment"
+                status_msg = f"⏳ NO TRADE: Waiting for Micro-Timeframe Alignment"
 
     print("\n" + "=" * 70)
     print(f"📊 LIVE QUANT REPORT: [{symbol_input}] | Score: {score}/100")
@@ -1032,7 +920,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
 
     if not trade_possible:
         print(f"\n🚫 TRADE STATUS: {status_msg}\n")
-
+        
         no_trade_body = f"🪙 Pair: {symbol_input}\n"
         no_trade_body += f"📊 Quant Score: {score}/100\n"
         no_trade_body += f"💰 Current Price: ${live_price:.4f}\n"
@@ -1043,7 +931,7 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
             no_trade_body += "💡 Confluences Evaluated:\n"
             for r in reasons:
                 no_trade_body += f"   • {r}\n"
-
+                
         send_pushbullet_notification(f"💤 [NO TRADE] {symbol_input} (Score: {score})", no_trade_body)
         return False
 
@@ -1054,50 +942,36 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     max_allowed_dollar_risk = total_account_capital * 0.01  # Exact 1% Total Equity Risk ($1.00 USDT)
     atr_sl_buffer = atr_val * 1.5
 
-    # Target Multiplier setup for minimum RRR guarantee
-    target_rrr = 1.2
-
     if direction == "LONG":
-        raw_sl = min(live_price - atr_sl_buffer, support_4h * 0.995)
-        # 🛡️ SL Cap Guard: Max 4.0% distance clamp for LONG
-        max_sl_dist = live_price * 0.04
-        sl_price = max(raw_sl, live_price - max_sl_dist)
-        
+        sl_price = min(live_price - atr_sl_buffer, support_4h * 0.995)
         risk_dist = live_price - sl_price
         
-        # Enforce minimum TP1 distance based on 1.2 RRR
-        min_tp_dist = risk_dist * target_rrr
-        tp1_price = max(live_price + (atr_val * 1.5), live_price + min_tp_dist)
-        tp2_price = max(resistance_4h, tp1_price * 1.01)
+        # Expanded Scalp Target for Optimized RRR (1.5x ATR)
+        tp1_price = live_price + (atr_val * 1.5)
+        tp2_price = resistance_4h
         
         reward_dist = tp1_price - live_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
         breakeven_lock_level = tp1_price
 
     elif direction == "SHORT":
-        raw_sl = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
-        # 🛡️ SL Cap Guard: Max 4.0% distance clamp for SHORT
-        max_sl_dist = live_price * 0.04
-        sl_price = min(raw_sl, live_price + max_sl_dist)
-        
+        sl_price = max(live_price + atr_sl_buffer, resistance_4h * 1.005)
         risk_dist = sl_price - live_price
         
-        # Enforce minimum TP1 distance based on 1.2 RRR
-        min_tp_dist = risk_dist * target_rrr
-        tp1_price = min(live_price - (atr_val * 1.5), live_price - min_tp_dist)
-        tp2_price = min(support_4h, tp1_price * 0.99)
+        # Expanded Scalp Target for Optimized RRR (1.5x ATR)
+        tp1_price = live_price - (atr_val * 1.5)
+        tp2_price = support_4h
         
         reward_dist = live_price - tp1_price
         calculated_rrr = reward_dist / risk_dist if risk_dist > 0 else 0
         breakeven_lock_level = tp1_price
 
-    # 🛑 SCALP-OPTIMIZED FILTER 1: Minimum Risk-to-Reward Ratio Guard (Min 1:1.0)
-    MIN_REQUIRED_RRR = 1.0
+    # 🛑 SCALP-OPTIMIZED FILTER 1: Minimum Risk-to-Reward Ratio Guard (Min 1:0.3)
+    MIN_REQUIRED_RRR = 0.2
     if calculated_rrr < MIN_REQUIRED_RRR:
         msg = f"🚫 TRADE REJECTED: Low Risk-to-Reward Ratio (1:{calculated_rrr:.2f}). Minimum 1:{MIN_REQUIRED_RRR} Required!"
         print(f"\n{msg}\n")
         send_pushbullet_notification(f"🚫 [LOW RRR REJECTED] {symbol_input}", msg)
-        
         return False
 
     # 🛑 STRICT FILTER 2: Total Capital 1% Risk Based Position Sizing
@@ -1107,7 +981,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
         print(f"\n{msg}\n")
         return False
 
-    # Position Value & Margin Calculation
     pos_value = max_allowed_dollar_risk / (sl_dist_pct / 100.0)
     required_margin = pos_value / leverage
     coin_qty = pos_value / live_price
@@ -1138,7 +1011,6 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     print(f"║ 🔒 MARGIN FROZEN       : ${required_margin:<15.2f} (-{margin_pct*100:.0f}% Available Cap)  ║")
     print(f"║ 🛡️ MAX RISK AMOUNT     : ${dollar_risk:<15.2f} (Strict 1% Total Equity)║")
     print("╚" + "═" * 68 + "╝")
-
 
     # =========================================================
     # 📲 PROFESSIONAL SIGNAL FORMATTER & IMAGE CARD GENERATOR
@@ -1189,140 +1061,30 @@ def process_trade_logic(symbol_input, base_risk_pct=1.5):
     trade_body += f"━━━━━━━━━━━━━━━━━━━━━━"
 
     # =========================================================
-    # 🎯 TRADE EXECUTION, BROADCAST & DB SAVE BLOCK
+    # 🎯 TRADE EXECUTION & DB SAVE BLOCK
     # =========================================================
 
-    # 1. 🖼️ Generate Signal Card Image & Convert to Base64
-    card_base64_str = ""
+    # 🖼️ Send Image Card + Message strictly to HARDCODED Topic ('lskejej_hdhehje')
     try:
         card_png_bytes = generate_signal_card(
-            symbol=symbol_input,
-            direction=direction,
-            leverage=leverage,
-            live_price=live_price,
-            sl_price=sl_price,
-            tp1_price=tp1_price,
-            tp2_price=tp2_price,
-            margin=required_margin,
-            pos_value=pos_value,
-            net_tp1=net_profit_tp1,
-            net_tp2=net_profit_tp2,
-            rrr=calculated_rrr,
+            symbol=symbol_input, direction=direction, leverage=leverage,
+            live_price=live_price, sl_price=sl_price, tp1_price=tp1_price,
+            tp2_price=tp2_price, margin=required_margin, pos_value=pos_value,
+            net_tp1=net_profit_tp1, net_tp2=net_profit_tp2, rrr=calculated_rrr
         )
-        if card_png_bytes:
-            card_base64_str = base64.b64encode(card_png_bytes).decode("utf-8")
         send_ex_trade_signal(trade_title, trade_body, card_png_bytes)
     except Exception as e:
         print(f"⚠️ Image attachment error: {e}. Falling back to text-only signal.")
         send_ex_trade_signal(trade_title, trade_body, None)
 
-    # =========================================================================
-    # 2. 🌐 BROADCAST SIGNAL TO WEB APP & SERVER (Early Broadcast)
-    # =========================================================================
-    try:
-        print("🔄 Initiating signal broadcast...")
-        
-        # Safely extract and format trade parameters with fallback defaults
-        broadcast_payload = {
-            "symbol": symbol_input,
-            "direction": direction,
-            "entry_price": float(live_price) if live_price is not None else 0.0,
-            "sl_price": float(sl_price) if sl_price is not None else 0.0,
-            "tp1_price": float(tp1_price) if tp1_price is not None else 0.0,
-            "tp2_price": float(tp2_price) if tp2_price is not None else 0.0,
-            "card_base64": card_base64_str or "",
-            "trade_body": trade_body or "",  # Server validation aur ntfy broadcast ke liye
-        }
-
-        broadcast_all_signals(broadcast_payload)
-        
-    except Exception as br_err:
-        import traceback
-        print(f"❌ Broadcast Execution Error: {br_err}")
-        print("🔍 Traceback Details:")
-        traceback.print_exc()
-
-    # =========================================================================
-    # 🛑 REJECTION GUARDS BLOCK (Broadcast Hone ke Baad Check Hoonge)
-    # =========================================================================
-
-    # 🔴 GLOBAL EARLY GUARD 0: Daily Risk Circuit Breaker (2 SLs / 1.5% Loss Limit)
-    is_halted, halt_reason = check_daily_drawdown_limit(max_daily_loss_pct=1.5, max_sl_count=5)
-    if is_halted:
-        msg = f"🛑 EMERGENCY STOP: {halt_reason}"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🛑 [DAILY CIRCUIT BREAKER] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 1: Active Trades Limit Check (Top-Level)
-    if active_count >= 5:
-        msg = f"⚠️ Trade Skipped for [{symbol_input}]: Maximum 5 Active Trades limit reached ({active_count}/5)."
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"⚠️ [MAX LIMIT REACHED] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 2: Low Available Capital
-    if port['available'] < 5.0:
-        msg = f"❌ Low Available Capital (${port['available']:.2f} USDT). Cannot place trade."
-        print(msg)
-        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 3: Duplicate Active Pair Check
-    if is_coin_trade_active(symbol_input):
-        msg = f"❌ TRADE REJECTED: An ACTIVE trade for [{symbol_input}] is ALREADY RUNNING!"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 3.5: Dynamic Cooldown Check (SL = 24H | TP = 4H)
-    is_blocked, cooldown_msg = check_dynamic_cooldown(symbol_input)
-    if is_blocked:
-        msg = f"🚫 TRADE REJECTED: [{symbol_input}] - {cooldown_msg}"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🚫 [DYNAMIC COOLDOWN] {symbol_input}", msg)
-        return False
-
-    # 🔴 EARLY GUARD 4: Sector/Category Correlation Exposure Check
-    corr_risk, corr_msg = check_correlation_exposure(symbol_input)
-    if corr_risk:
-        msg = f"⚠️ CORRELATION BLOCKED: {corr_msg}"
-        print(f"\n{msg}\n")
-        send_pushbullet_notification(f"🚫 [TRADE REJECTED] {symbol_input}", msg)
-        return False
-
-    # =========================================================================
-    # 3. 💾 Save Executed Trade to DB (Guards Clear Hone ke Baad)
-    # =========================================================================
-    try:
-        print("💾 Saving trade execution data to DB...")
-        
-        db_payload = {
-            "symbol": symbol_input,
-            "direction": direction,
-            "entry_price": live_price,
-            "sl_price": sl_price,
-            "tp1_price": tp1_price,
-            "tp2_price": tp2_price,
-            "margin_frozen": required_margin,
-            "pos_value": pos_value,
-            "coin_qty": coin_qty,
-            "leverage": leverage,
-            "available_cap": port.get("available", 0) if isinstance(port, dict) else 0,
-            "frozen_cap": port.get("frozen", 0) if isinstance(port, dict) else 0,
-        }
-
-        save_trade_to_db(db_payload)
-
-    except Exception as db_err:
-        import traceback
-        print(f"❌ DB Save Execution Error: {db_err}")
-        traceback.print_exc()
-
+    # 💾 Save Executed Trade to DB
+    save_trade_to_db({
+        'symbol': symbol_input, 'direction': direction, 'entry_price': live_price,
+        'sl_price': sl_price, 'tp1_price': tp1_price, 'tp2_price': tp2_price,
+        'margin_frozen': required_margin, 'pos_value': pos_value, 'coin_qty': coin_qty,
+        'leverage': leverage, 'available_cap': port['available'], 'frozen_cap': port['frozen']
+    })
     return True
-
-
-
 
 
 
