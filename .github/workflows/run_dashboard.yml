@@ -40,10 +40,16 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
         run: |
-          echo "Starting Gunicorn WSGI Server in background on port 5000..."
-          nohup gunicorn -w 2 -b 0.0.0.0:5000 server:app > flask.log 2>&1 &
-          echo "Waiting 5 seconds for server boot..."
-          sleep 5
+          echo "Checking repository structure..."
+          ls -la
+
+          echo "Starting Gunicorn WSGI Server for server.py on port 5000..."
+          nohup gunicorn --workers=2 --bind=0.0.0.0:5000 --timeout 120 server:app > flask.log 2>&1 &
+          
+          echo "Waiting 8 seconds for Flask server boot..."
+          sleep 8
+
+          echo "--- FLASK / GUNICORN LOGS ---"
           cat flask.log
 
       - name: Launch Permanent Cloudflare Tunnel & Send Static Link
