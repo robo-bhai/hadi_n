@@ -49,7 +49,7 @@ jobs:
       - name: Launch Permanent Cloudflare Tunnel & Send Static Link
         run: |
           echo "Starting Cloudflare Tunnel via Token..."
-          nohup cloudflared tunnel run --token ${{ secrets.CLOUDFLARE_TOKEN }} > cloudflare.log 2>&1 &
+          nohup cloudflared tunnel run --token ${{ secrets.CLOUDFLARE_TOKEN_1 }} > cloudflare.log 2>&1 &
           sleep 5
 
           # Cloudflare Dashboard par add kiya hua aapka naya subdomain (e.g., crypto.hadi88.online)
