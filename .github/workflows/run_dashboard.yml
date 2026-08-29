@@ -24,14 +24,14 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flask mysql-connector-python pandas requests gunicorn Flask-HTTPAuth werkzeug
+          pip install flask mysql-connector-python pandas requests Flask-HTTPAuth werkzeug
           
           # Install Cloudflared CLI
           curl -L --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/cloudflared
 
-      - name: Launch Production Server via Gunicorn
+      - name: Launch Server via Flask CLI
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
@@ -42,15 +42,15 @@ jobs:
           echo "Checking Repository Root Files..."
           ls -la
 
-          echo "Launching Gunicorn on 0.0.0.0:5000..."
-          nohup gunicorn --workers=2 --threads=2 --bind=0.0.0.0:5000 --timeout=120 --log-level=debug server:app > flask.log 2>&1 &
+          echo "Launching Flask App on 0.0.0.0:5000..."
+          FLASK_APP=server.py nohup flask run --host=0.0.0.0 --port=5000 > flask.log 2>&1 &
 
-          echo "Waiting 10 seconds for Flask workers to register..."
+          echo "Waiting 10 seconds for Flask to register..."
           sleep 10
 
-          echo "================ FLASK / GUNICORN LOGS ================"
+          echo "================ FLASK LOGS ================"
           cat flask.log
-          echo "======================================================="
+          echo "============================================"
 
       - name: Launch Permanent Cloudflare Tunnel & Send Static Link
         run: |
