@@ -15,24 +15,24 @@ load_dotenv()
 db_user = os.environ.get('DB_USER', 'avnadmin')
 db_pass = os.environ.get('DB_PASS', os.environ.get('DB_PASSWORD', ''))
 db_host = os.environ.get(
-      'DB_HOST', 'mysql-3a3d5779-project-b71a.b.aivencloud.com'
-  )
+    'DB_HOST', 'mysql-3a3d5779-project-b71a.b.aivencloud.com'
+)
 db_port = int(os.environ.get('DB_PORT', '23464'))
 db_name = os.environ.get('DB_NAME', 'defaultdb')
 
-if not all([MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_DB]):
+if not all([db_user, db_host, db_name]):
     raise ValueError("CRITICAL ERROR: Database environment variables missing!")
 
-ENCRYPTION_SECRET = os.environ.get('BACKUP_SECRET_KEY')
+ENCRYPTION_SECRET = os.environ.get('BACKUP_SECRET_KEY', 'default_fallback_secret_key_32_bytes')
 
 # --- 2. ENGINE BUILDER ---
 def get_db_engine():
-    db_uri = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
+    db_uri = f"mysql+pymysql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
     engine_options = {
         'pool_recycle': 280,
         'pool_pre_ping': True
     }
-    if MYSQL_HOST != '127.0.0.1':
+    if db_host != '127.0.0.1':
         engine_options['connect_args'] = {'ssl': {'ssl_mode': 'REQUIRED'}}
     
     return create_engine(db_uri, **engine_options)
@@ -65,7 +65,7 @@ def decrypt_data(file_bytes: bytes) -> str:
 def export_backup(output_filename=None):
     if not output_filename:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"backup_{MYSQL_DB}_{timestamp}.enc"
+        output_filename = f"backup_{db_name}_{timestamp}.enc"
 
     engine = get_db_engine()
     inspector = inspect(engine)
@@ -73,7 +73,7 @@ def export_backup(output_filename=None):
 
     backup_data = {}
 
-    print(f"📦 Starting Encrypted Backup for Database: [{MYSQL_DB}]...")
+    print(f"📦 Starting Encrypted Backup for Database: [{db_name}]...")
 
     with engine.connect() as conn:
         for table in tables:
