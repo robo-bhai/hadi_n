@@ -75,7 +75,7 @@ jobs:
         echo "📊 Total backups currently in Drive: $FILE_COUNT"
 
         # Agar 7 se zyada files hain to oldest files delete karna
-        if [ "$FILE_COUNT" -gt 7 ]; then
+        if [ "$FILE_COUNT" -gt 2 ]; then
           DELETE_COUNT=$((FILE_COUNT - 7))
           echo "⚠️ Found $FILE_COUNT backups. Deleting oldest $DELETE_COUNT backup(s)..."
           
@@ -87,7 +87,7 @@ jobs:
           done
           echo "✅ Old backups cleaned up successfully."
         else
-          echo "ℹ️ Total backups ($FILE_COUNT) are within the 7-file limit. No cleanup needed."
+          echo "ℹ️ Total backups ($FILE_COUNT) are within the 2-file limit. No cleanup needed."
         fi
 
     - name: Workflow Status Summary
