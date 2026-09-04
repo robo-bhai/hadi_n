@@ -17,8 +17,8 @@ db_pass = os.environ.get('DB_PASS', os.environ.get('DB_PASSWORD', ''))
 db_host = os.environ.get(
       'DB_HOST', 'mysql-3a3d5779-project-b71a.b.aivencloud.com'
   )
-MYSQL_PORT = os.environ.get('MYSQL_PORT', '13461')
-MYSQL_DB = os.environ.get('MYSQL_DB')
+db_port = int(os.environ.get('DB_PORT', '23464'))
+db_name = os.environ.get('DB_NAME', 'defaultdb')
 
 if not all([MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_DB]):
     raise ValueError("CRITICAL ERROR: Database environment variables missing!")
