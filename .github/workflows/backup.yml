@@ -51,6 +51,7 @@ jobs:
         echo "$RCLONE_CONFIG_DATA" > ~/.config/rclone/rclone.conf
         
         # Verify Rclone configuration
+        echo "📋 Available Rclone Remotes:"
         rclone listremotes
 
     - name: Upload New Backup & Rotate (Keep Latest 7)
