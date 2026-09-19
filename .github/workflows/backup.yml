@@ -1,4 +1,4 @@
-name: Database Backup to Google Drive (Latest 7 Rotated)
+name: Database Backup to Google Drive (Keep Latest 1 Only)
 
 on:
   workflow_dispatch: # Sirf Manual Trigger active hai
@@ -54,16 +54,16 @@ jobs:
         echo "📋 Available Rclone Remotes:"
         rclone listremotes
 
-    - name: Upload New Backup & Rotate (Keep Latest 7)
+    - name: Upload New Backup & Keep Only Latest 1 (Permanent Delete)
       run: |
         TARGET_DIR="gdrive:DB_Backups"
 
         echo "🚀 Uploading new backup to Google Drive folder: DB_Backups..."
         rclone copy *.enc $TARGET_DIR --verbose
 
-        echo "🧹 Checking and rotating backups (Keeping only latest 7)..."
+        echo "🧹 Checking and rotating backups (Keeping ONLY 1 latest file)..."
         
-        # Google Drive se sabhi .enc files ki sorted list nikalna
+        # Google Drive se sabhi .enc files ki sorted list (Oldest to Newest)
         ALL_FILES=$(rclone lsjson $TARGET_DIR --include "*.enc" | jq -r 'sort_by(.ModTime) | .[].Name' | grep -v '^$' || true)
         
         if [ -z "$ALL_FILES" ]; then
@@ -74,22 +74,27 @@ jobs:
 
         echo "📊 Total backups currently in Drive: $FILE_COUNT"
 
-        # Agar 7 se zyada files hain to oldest files delete karna
-        if [ "$FILE_COUNT" -gt 2 ]; then
-          DELETE_COUNT=$((FILE_COUNT - 7))
-          echo "⚠️ Found $FILE_COUNT backups. Deleting oldest $DELETE_COUNT backup(s)..."
+        # Agar 1 se zyada files hain to purani sabhi delete karna
+        if [ "$FILE_COUNT" -gt 1 ]; then
+          DELETE_COUNT=$((FILE_COUNT - 1))
+          echo "⚠️ Found $FILE_COUNT backups. Permanently deleting $DELETE_COUNT old backup(s)..."
           
           FILES_TO_DELETE=$(echo "$ALL_FILES" | head -n $DELETE_COUNT)
           
           for FILE in $FILES_TO_DELETE; do
-            echo "🗑️ Deleting old backup: $FILE"
-            rclone deletefile "$TARGET_DIR/$FILE"
+            echo "🗑️ Permanently deleting old backup: $FILE"
+            # --drive-use-trash=false Trash/Recycle Bin ko bypass karta he
+            rclone deletefile "$TARGET_DIR/$FILE" --drive-use-trash=false
           done
-          echo "✅ Old backups cleaned up successfully."
+          echo "✅ Old backups cleaned up permanently."
         else
-          echo "ℹ️ Total backups ($FILE_COUNT) are within the 2-file limit. No cleanup needed."
+          echo "ℹ️ Only $FILE_COUNT backup present. No cleanup needed."
         fi
+
+        # Google Drive Trash / Recycle Bin ko mukammal khali karna
+        echo "🧹 Emptying Google Drive Trash..."
+        rclone cleanup $TARGET_DIR
 
     - name: Workflow Status Summary
       run: |
-        echo "🎉 Backup and 7-file rotation process completed successfully!"
+        echo "🎉 Backup completed and only 1 latest file is retained in Drive!"
