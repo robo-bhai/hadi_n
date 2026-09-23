@@ -1,3 +1,7 @@
 *.zip
 *.db
 __pycache__/
+.github/workflows/*.py
+app/
+binance-market-scanner_5.0/
+temp/
