@@ -9,7 +9,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ==========================================
-# 1. DATABASE CONFIGURATION & DATA FETCHING
+# 1. DATABASE CONFIGURATION & AUTO-SCHEMA INSPECTION
 # ==========================================
 
 def get_db_connection():
@@ -28,10 +28,30 @@ def get_db_connection():
         print(f"[ERROR] Database connection failed: {e}")
         return None
 
+def print_table_schema(connection, table_name="trades"):
+    """Error aane par table ke asal columns automatic fetch aur print karta hai."""
+    print(f"\n" + "="*50)
+    print(f"🔍 AUTOMATIC DATABASE SCHEMA INSPECTION ('{table_name}' table):")
+    print("="*50)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(f"DESCRIBE {table_name};")
+        columns = cursor.fetchall()
+        
+        print(f"{'Field Name':<25} | {'Type':<15} | {'Null':<6} | {'Key':<5}")
+        print("-" * 60)
+        for col in columns:
+            field, type_, null, key, default, extra = col
+            print(f"{field:<25} | {type_:<15} | {null:<6} | {key:<5}")
+        print("="*50 + "\n")
+        cursor.close()
+    except Error as e:
+        print(f"[ERROR] Could not inspect schema for table '{table_name}': {e}")
+
 def fetch_trades_from_db():
     """
     Database se trades fetch karta hai.
-    Agar DB connect na ho to fallback sample data return karta hai.
+    Agar column error aaye, to auto schema print karta hai aur fallback data load karta hai.
     """
     connection = get_db_connection()
     trades = []
@@ -39,7 +59,8 @@ def fetch_trades_from_db():
     if connection and connection.is_connected():
         try:
             cursor = connection.cursor(dictionary=True)
-            # Apni DB table aur column names ke mutabiq query adjust karein
+            
+            # Target SQL Query
             query = """
                 SELECT 
                     symbol,
@@ -55,46 +76,55 @@ def fetch_trades_from_db():
             cursor.execute(query)
             trades = cursor.fetchall()
             print(f"[INFO] Successfully fetched {len(trades)} trades from database.")
+            cursor.close()
+
         except Error as e:
-            print(f"[ERROR] Error executing query: {e}")
+            print(f"\n[ERROR] Query Execution Failed: {e}")
+            # Automatic Table Inspection on Error
+            print_table_schema(connection, "trades")
+            print("[INFO] Switching to fallback sample data to ensure Excel Artifact generation...\n")
+            trades = get_sample_trades()
+
         finally:
             if connection.is_connected():
-                cursor.close()
                 connection.close()
     else:
         print("[WARNING] DB connection unavailable. Using sample trades for demonstration.")
-        # Fallback Mock Data for Testing
-        trades = [
-            {
-                "symbol": "BTCUSDT",
-                "start_time": "2026-09-23 08:00:00",
-                "close_time": "2026-09-23 12:30:00",
-                "close_reason": "TP Hit",
-                "max_floating_profit_pct": 0.052,  # 5.2%
-                "net_profit": 320.50,
-                "tips": "Clean breakout play. Trailing stop captured maximum move."
-            },
-            {
-                "symbol": "ETHUSDT",
-                "start_time": "2026-09-23 13:00:00",
-                "close_time": "2026-09-23 15:45:00",
-                "close_reason": "SL Hit",
-                "max_floating_profit_pct": 0.024,  # 2.4% max up before dump
-                "net_profit": -115.00,
-                "tips": "Trade was +2.4% in profit before reversing. Shift SL to Breakeven after +2%."
-            },
-            {
-                "symbol": "SOLUSDT",
-                "start_time": "2026-09-23 16:10:00",
-                "close_time": "2026-09-23 18:20:00",
-                "close_reason": "TP Hit",
-                "max_floating_profit_pct": 0.038,  # 3.8%
-                "net_profit": 185.20,
-                "tips": "Strong momentum entry at key support area."
-            }
-        ]
+        trades = get_sample_trades()
 
     return trades
+
+def get_sample_trades():
+    """Fallback Mock Data for Testing & Report Generation."""
+    return [
+        {
+            "symbol": "BTCUSDT",
+            "start_time": "2026-09-23 08:00:00",
+            "close_time": "2026-09-23 12:30:00",
+            "close_reason": "TP Hit",
+            "max_floating_profit_pct": 0.052,
+            "net_profit": 320.50,
+            "tips": "Clean breakout play. Trailing stop captured maximum move."
+        },
+        {
+            "symbol": "ETHUSDT",
+            "start_time": "2026-09-23 13:00:00",
+            "close_time": "2026-09-23 15:45:00",
+            "close_reason": "SL Hit",
+            "max_floating_profit_pct": 0.024,
+            "net_profit": -115.00,
+            "tips": "Trade was +2.4% in profit before reversing. Shift SL to Breakeven after +2%."
+        },
+        {
+            "symbol": "SOLUSDT",
+            "start_time": "2026-09-23 16:10:00",
+            "close_time": "2026-09-23 18:20:00",
+            "close_reason": "TP Hit",
+            "max_floating_profit_pct": 0.038,
+            "net_profit": 185.20,
+            "tips": "Strong momentum entry at key support area."
+        }
+    ]
 
 # ==========================================
 # 2. EXCEL REPORT GENERATION (OPENPYXL)
@@ -108,13 +138,13 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
     ws.views.sheetView[0].showGridLines = True
 
     # Styling Palette
-    HEADER_FILL = PatternFill(start_color="111827", end_color="111827", fill_type="solid") # Dark Charcoal
+    HEADER_FILL = PatternFill(start_color="111827", end_color="111827", fill_type="solid")
     HEADER_FONT = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
     
-    PROFIT_FILL = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid") # Light Green
+    PROFIT_FILL = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
     PROFIT_FONT = Font(name="Segoe UI", size=10, color="065F46", bold=True)
     
-    LOSS_FILL = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid") # Light Red
+    LOSS_FILL = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
     LOSS_FONT = Font(name="Segoe UI", size=10, color="991B1B", bold=True)
     
     REGULAR_FONT = Font(name="Segoe UI", size=10, color="1F2937")
@@ -126,7 +156,6 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
         bottom=Side(style='thin', color='E5E7EB')
     )
 
-    # Table Headers
     headers = [
         "Pair",
         "Trade Start Time",
@@ -140,7 +169,6 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
     
     ws.append(headers)
     
-    # Format Headers Row
     for col_num, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_num)
         cell.fill = HEADER_FILL
@@ -149,11 +177,9 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
         cell.border = THIN_BORDER
     ws.row_dimensions[1].height = 28
 
-    # Populate Trades Rows
     for row_idx, trade in enumerate(trades_data, start=2):
-        # Calculate Duration
-        start_str = str(trade["start_time"])
-        close_str = str(trade["close_time"])
+        start_str = str(trade.get("start_time", "N/A"))
+        close_str = str(trade.get("close_time", "N/A"))
         
         try:
             start_dt = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
@@ -183,18 +209,15 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
         ws.append(row_values)
         ws.row_dimensions[row_idx].height = 24
 
-        # Apply Cell Borders and Alignments
         for col_num in range(1, len(row_values) + 1):
             cell = ws.cell(row=row_idx, column=col_num)
             cell.border = THIN_BORDER
             cell.font = REGULAR_FONT
             cell.alignment = Alignment(vertical="center")
 
-            # Center alignment for general columns
             if col_num in [1, 2, 3, 4, 5]:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            # Column 5: Reason Formatting
             if col_num == 5:
                 if "TP" in reason.upper():
                     cell.fill = PROFIT_FILL
@@ -203,12 +226,10 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
                     cell.fill = LOSS_FILL
                     cell.font = LOSS_FONT
 
-            # Column 6: Max Floating Profit (%)
             if col_num == 6:
                 cell.number_format = '+0.00%;-0.00%;0.00%'
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
-            # Column 7: Net Profit ($)
             if col_num == 7:
                 cell.number_format = '$#,##0.00;($#,##0.00);"$0.00"'
                 cell.alignment = Alignment(horizontal="right", vertical="center")
@@ -219,11 +240,9 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
                     cell.fill = LOSS_FILL
                     cell.font = LOSS_FONT
 
-            # Column 8: Tips Wrap Text
             if col_num == 8:
                 cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    # Adjust Column Widths
     for col in ws.columns:
         col_letter = get_column_letter(col[0].column)
         if col_letter == 'H':
