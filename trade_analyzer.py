@@ -1,5 +1,6 @@
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 import requests
 import mysql.connector
 from mysql.connector import Error
@@ -8,11 +9,94 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ==========================================
-# 1. DATABASE CONFIGURATION & DATA FETCHING
+# 1. BINANCE MARKET SCANNER (START TO CURRENT TIME)
+# ==========================================
+
+def get_max_price_before_sl_till_now(symbol, direction, entry_price, sl_price, start_time):
+    """
+    Trade Start Time se le kar CURRENT TIME tak Binance 1m candles scan karta hai.
+    Stop Loss (SL) hit hone se pehle ki Maximum Favorable Price return karta hai.
+    """
+    if not symbol or not entry_price or not sl_price or not start_time:
+        return entry_price
+
+    # Symbol format cleanup (e.g. BTCUSDT)
+    clean_symbol = symbol.replace("/", "").replace("-", "").upper()
+    if not clean_symbol.endswith("USDT") and not clean_symbol.endswith("BUSD"):
+        clean_symbol += "USDT"
+
+    # Start Time & Current Time in Unix Timestamps (ms)
+    if isinstance(start_time, datetime):
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        start_ts = int(start_time.timestamp() * 1000)
+    else:
+        start_ts = int(time.time() * 1000) - (3600 * 1000)
+
+    # Current Time when script is executing
+    current_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    max_favorable_price = entry_price
+    sl_hit_detected = False
+
+    # Binance 1000 candles max per request - Loop through batches till current_ts
+    temp_start_ts = start_ts
+    
+    while temp_start_ts < current_ts and not sl_hit_detected:
+        url = (
+            f"https://api.binance.com/api/v3/klines"
+            f"?symbol={clean_symbol}&interval=1m&startTime={temp_start_ts}&endTime={current_ts}&limit=1000"
+        )
+        
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                candles = response.json()
+                if not candles:
+                    break
+
+                for candle in candles:
+                    high_p = float(candle[2])
+                    low_p = float(candle[3])
+
+                    if direction.upper() == "LONG":
+                        # Agar price ne SL touch kar diya toh scan stop
+                        if low_p <= sl_price:
+                            max_favorable_price = max(max_favorable_price, high_p)
+                            sl_hit_detected = True
+                            break
+                        max_favorable_price = max(max_favorable_price, high_p)
+
+                    elif direction.upper() == "SHORT":
+                        # Agar price ne SL touch kar diya toh scan stop
+                        if high_p >= sl_price:
+                            max_favorable_price = min(max_favorable_price, low_p)
+                            sl_hit_detected = True
+                            break
+                        max_favorable_price = min(max_favorable_price, low_p)
+
+                # Next batch ke liye timestamp move karein (last candle close time + 1ms)
+                last_candle_close_time = candles[-1][6]
+                temp_start_ts = last_candle_close_time + 1
+                
+                # Rate limit protection for GitHub Actions
+                time.sleep(0.1)
+            else:
+                print(f"[WARNING] Binance API Status Code: {response.status_code} for {clean_symbol}")
+                break
+
+        except Exception as e:
+            print(f"[ERROR] Fetching Binance klines failed for {clean_symbol}: {e}")
+            break
+
+    return max_favorable_price
+
+
+# ==========================================
+# 2. DATABASE CONFIGURATION & DATA FETCHING
 # ==========================================
 
 def get_db_connection():
-    """Database connection establish karta hai env variables se."""
     try:
         connection = mysql.connector.connect(
             host=os.getenv("DB_HOST", "localhost"),
@@ -28,14 +112,12 @@ def get_db_connection():
         return None
 
 def fetch_trades_from_db():
-    """Database se trades ka raw data fetch karta hai."""
     connection = get_db_connection()
     trades = []
 
     if connection and connection.is_connected():
         try:
             cursor = connection.cursor(dictionary=True)
-            
             query = """
                 SELECT 
                     symbol,
@@ -43,68 +125,53 @@ def fetch_trades_from_db():
                     entry_price,
                     sl_price,
                     tp1_price,
-                    tp2_price,
                     coin_qty,
                     pos_value,
-                    leverage,
                     timestamp AS start_time,
                     COALESCE(updated_at, timestamp) AS close_time,
                     COALESCE(exit_reason, status, 'N/A') AS close_reason,
-                    CASE 
-                        WHEN tp_rrr_10_hit = 1 THEN 0.10
-                        WHEN tp_rrr_05_hit = 1 THEN 0.05
-                        WHEN tp_rrr_02_hit = 1 THEN 0.02
-                        WHEN tp_050_hit = 1 THEN 0.05
-                        WHEN tp_020_hit = 1 THEN 0.02
-                        ELSE 0.00
-                    END AS max_floating_profit_pct,
                     COALESCE(pnl, 0.0) AS net_profit
                 FROM trades
                 ORDER BY timestamp DESC
             """
             cursor.execute(query)
             trades = cursor.fetchall()
-            print(f"[INFO] Successfully fetched {len(trades)} trades from database.")
+            print(f"[INFO] Fetched {len(trades)} trades from database.")
             cursor.close()
-
         except Error as e:
-            print(f"\n[ERROR] Query Execution Failed: {e}")
-            trades = []
-
+            print(f"[ERROR] Database Query Failed: {e}")
         finally:
             if connection.is_connected():
                 connection.close()
-    else:
-        print("[WARNING] DB connection unavailable.")
 
     return trades
 
+
 # ==========================================
-# 2. EXCEL REPORT GENERATION WITH NEW COLUMNS
+# 3. EXCEL REPORT GENERATION
 # ==========================================
 
 def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx"):
-    """Excel sheet mein dynamic formulas ke sath naye columns add karta hai."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Trade Breakdown"
     ws.views.sheetView[0].showGridLines = True
 
-    # Styling Colors
-    HEADER_FILL = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid") # Dark Slate
+    # Header & Accent Styles
+    HEADER_FILL = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
     HEADER_FONT = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
     
-    PROFIT_FILL = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid") # Soft Green
+    PROFIT_FILL = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
     PROFIT_FONT = Font(name="Segoe UI", size=10, color="065F46", bold=True)
     
-    LOSS_FILL = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid") # Soft Red
+    LOSS_FILL = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
     LOSS_FONT = Font(name="Segoe UI", size=10, color="991B1B", bold=True)
     
-    PEAK_FILL = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") # Soft Amber/Gold
+    PEAK_FILL = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
     PEAK_FONT = Font(name="Segoe UI", size=10, color="92400E", bold=True)
 
-    RR_FILL = PatternFill(start_color="E0F2FE", end_color="E0F2FE", fill_type="solid") # Soft Blue
-    RR_FONT = Font(name="Segoe UI", size=10, color="0369A1", bold=True)
+    WARN_FILL = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
+    WARN_FONT = Font(name="Segoe UI", size=10, color="C2410C", bold=True)
 
     REGULAR_FONT = Font(name="Segoe UI", size=10, color="1F2937")
 
@@ -115,36 +182,32 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
         bottom=Side(style='thin', color='E5E7EB')
     )
 
-    # Updated Column Headers (Explicitly showing Peak PnL, Peak R, and 1:2 Condition)
     headers = [
-        "Pair",                   # Col A
-        "Direction",              # Col B
-        "Start Time",             # Col C
-        "Close Time",             # Col D
-        "Entry Price ($)",        # Col E
-        "SL Price ($)",           # Col F
-        "Quantity",               # Col G
-        "Max Peak Price ($)",     # Col H (NEW)
-        "Max Peak Floating PnL",  # Col I (NEW - Formula)
-        "Max Peak R-Multiple",    # Col J (NEW - Formula)
-        "Target 1:2 PnL ($)",     # Col K (NEW - Formula)
-        "1:2 Condition Met?",     # Col L (NEW - Formula)
-        "Actual Net PnL ($)",     # Col M
-        "Close Reason"            # Col N
+        "Pair",                       # Col A
+        "Side",                       # Col B
+        "Start Time",                 # Col C
+        "Close / Status Time",        # Col D
+        "Entry Price ($)",            # Col E
+        "SL Price ($)",               # Col F
+        "Quantity",                   # Col G
+        "Max Market Price Before SL", # Col H (FETCHED LIVE FROM BINANCE TILL NOW)
+        "Max PnL Before SL ($)",      # Col I (EXACT MAXIMUM PROFIT YOU COULD HAVE TAKEN)
+        "Max Peak R-Multiple",        # Col J (FORMULA)
+        "1:2 Opportunity Status",     # Col K (STATUS)
+        "Actual Net PnL ($)",         # Col L
+        "Close Reason"                # Col M
     ]
     
     ws.append(headers)
     
-    # Format Header Row
     for col_num, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_num)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = THIN_BORDER
-    ws.row_dimensions[1].height = 28
+    ws.row_dimensions[1].height = 32
 
-    # Populate Rows & Append Dynamic Excel Formulas
     for row_idx, trade in enumerate(trades_data, start=2):
         start_val = trade.get("start_time")
         close_val = trade.get("close_time")
@@ -157,67 +220,58 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
         sl_price = float(trade.get("sl_price", 0.0))
         coin_qty = float(trade.get("coin_qty", 0.0))
         pos_value = float(trade.get("pos_value", 0.0))
-        max_float_pct = float(trade.get("max_floating_profit_pct", 0.0))
         net_pnl = float(trade.get("net_profit", 0.0))
         reason = str(trade.get("close_reason", "N/A"))
 
-        # Effective Quantity Calculation
         effective_qty = coin_qty
         if effective_qty == 0 and pos_value > 0 and entry_price > 0:
             effective_qty = pos_value / entry_price
 
-        # Calculate Max Peak Price reached before SL
-        if direction == "SHORT":
-            max_peak_price = entry_price * (1.0 - max_float_pct) if max_float_pct > 0 else entry_price
-        else:
-            max_peak_price = entry_price * (1.0 + max_float_pct) if max_float_pct > 0 else entry_price
+        # Fetch Max Market Price from Start Time to NOW (Current Execution Time)
+        print(f"[FETCHING] Scanning candles for {trade.get('symbol')} from start till NOW...")
+        max_price_before_sl = get_max_price_before_sl_till_now(
+            trade.get("symbol"), direction, entry_price, sl_price, start_val
+        )
 
-        # --- EXCEL DYNAMIC FORMULAS ---
-        # Col I (Max Peak PnL): Long -> (Peak - Entry)*Qty | Short -> (Entry - Peak)*Qty
-        formula_peak_pnl = f'=IF(B{row_idx}="SHORT", (E{row_idx}-H{row_idx})*G{row_idx}, (H{row_idx}-E{row_idx})*G{row_idx})'
+        # Dynamic Formulas in Excel
+        # Col I (Max PnL Before SL): Calculated based on Long or Short
+        formula_max_pnl = f'=IF(B{row_idx}="SHORT", (E{row_idx}-H{row_idx})*G{row_idx}, (H{row_idx}-E{row_idx})*G{row_idx})'
         
-        # Col J (Max Peak R-Multiple): Peak PnL / Risk Dollar Amount
+        # Col J (Max Peak R-Multiple): Max PnL / Risk Dollar Amount
         formula_peak_r = f'=IF(ABS(E{row_idx}-F{row_idx})*G{row_idx}>0, I{row_idx}/(ABS(E{row_idx}-F{row_idx})*G{row_idx}), 0)'
 
-        # Col K (Target 1:2 PnL): Risk Amount * 2
-        formula_1_2_pnl = f'=(ABS(E{row_idx}-F{row_idx})*G{row_idx})*2'
-
-        # Col L (Condition Met): Checks if Peak R reached >= 2.0
-        formula_condition = f'=IF(J{row_idx}>=2.0, "1:2 Achieved", "Failed 1:2 (SL Hit)")'
+        # Col K (1:2 Opportunity Status): Check if trade passed 1:2
+        formula_status = f'=IF(J{row_idx}>=2.0, "1:2 Achieved Before SL", IF(J{row_idx}>=1.0, "Partial TP Available (>=1R)", "Direct SL / No Profit"))'
 
         row_values = [
-            trade.get("symbol", "N/A"), # Col A
-            direction,                   # Col B
-            start_str,                   # Col C
-            close_str,                   # Col D
-            entry_price,                 # Col E
-            sl_price,                    # Col F
-            effective_qty,               # Col G
-            max_peak_price,              # Col H
-            formula_peak_pnl,            # Col I (FORMULA)
-            formula_peak_r,              # Col J (FORMULA)
-            formula_1_2_pnl,             # Col K (FORMULA)
-            formula_condition,           # Col L (FORMULA)
-            net_pnl,                     # Col M
-            reason                       # Col N
+            trade.get("symbol", "N/A"),
+            direction,
+            start_str,
+            close_str,
+            entry_price,
+            sl_price,
+            effective_qty,
+            max_price_before_sl,
+            formula_max_pnl,
+            formula_peak_r,
+            formula_status,
+            net_pnl,
+            reason
         ]
         
         ws.append(row_values)
         ws.row_dimensions[row_idx].height = 22
 
-        # Cell Styling & Formatting
         for col_num in range(1, len(row_values) + 1):
             cell = ws.cell(row=row_idx, column=col_num)
             cell.border = THIN_BORDER
             cell.font = REGULAR_FONT
-            cell.alignment = Alignment(vertical="center")
 
-            # Center alignment for general info
-            if col_num in [1, 2, 3, 4, 12, 14]:
+            if col_num in [1, 2, 3, 4, 11, 13]:
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            # Currency Formatting for Prices & PnL
-            if col_num in [5, 6, 8, 9, 11, 13]:
+            # Currency Formatting
+            if col_num in [5, 6, 8, 9, 12]:
                 cell.number_format = '$#,##0.00;($#,##0.00);"$0.00"'
                 cell.alignment = Alignment(horizontal="right", vertical="center")
 
@@ -226,18 +280,18 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
                 cell.fill = PEAK_FILL
                 cell.font = PEAK_FONT
 
-            # Column J: R-Multiple Formatting
+            # Column J: Peak R-Multiple
             if col_num == 10:
                 cell.number_format = '0.00"R"'
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
-            # Column K: Target 1:2 PnL Highlighting
+            # Column K: Status Highlighting
             if col_num == 11:
-                cell.fill = RR_FILL
-                cell.font = RR_FONT
+                cell.fill = WARN_FILL
+                cell.font = WARN_FONT
 
-            # Column M: Net PnL Colors
-            if col_num == 13:
+            # Column L: Actual Net PnL
+            if col_num == 12:
                 if net_pnl > 0:
                     cell.fill = PROFIT_FILL
                     cell.font = PROFIT_FONT
@@ -245,8 +299,8 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
                     cell.fill = LOSS_FILL
                     cell.font = LOSS_FONT
 
-            # Column N: Close Reason Styling
-            if col_num == 14:
+            # Column M: Close Reason Styling
+            if col_num == 13:
                 if "TP" in reason.upper() or net_pnl > 0:
                     cell.fill = PROFIT_FILL
                     cell.font = PROFIT_FONT
@@ -254,57 +308,25 @@ def create_excel_report(trades_data, output_filename="Crypto_Trade_Report.xlsx")
                     cell.fill = LOSS_FILL
                     cell.font = LOSS_FONT
 
-    # Adjust Column Auto-Widths
     for col in ws.columns:
         col_letter = get_column_letter(col[0].column)
         max_len = max(len(str(cell.value or '')) for cell in col)
         ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
 
     wb.save(output_filename)
-    print(f"[SUCCESS] Updated report with new dynamic Excel columns saved to: {output_filename}")
+    print(f"\n[SUCCESS] Excel report successfully generated: {output_filename}")
     return output_filename
 
-# ==========================================
-# 3. NTFY NOTIFICATION ALERT
-# ==========================================
-
-def send_ntfy_notification(total_trades, net_pnl):
-    """Execution update ntfy topic par push karta hai."""
-    ntfy_topic = os.getenv("NTFY_TOPIC")
-    if not ntfy_topic:
-        print("[INFO] NTFY_TOPIC not configured. Skipping notification.")
-        return
-
-    pnl_symbol = "🟢 +" if net_pnl >= 0 else "🔴 "
-    message = f"Analyzed {total_trades} trades breakdown.\nTotal PnL: {pnl_symbol}${net_pnl:.2f}\nNew Excel Report Generated."
-    
-    try:
-        requests.post(
-            f"https://ntfy.sh/{ntfy_topic}",
-            data=message.encode('utf-8'),
-            headers={
-                "Title": "Trade Breakdown Updated",
-                "Priority": "default",
-                "Tags": "chart_with_upwards_trend,file_folder"
-            },
-            timeout=10
-        )
-        print("[INFO] Notification sent to ntfy.")
-    except Exception as e:
-        print(f"[ERROR] Failed to send ntfy notification: {e}")
 
 # ==========================================
 # 4. MAIN RUNNER
 # ==========================================
 
 def main():
-    print("--- Starting Updated Trade Analysis Breakdown ---")
+    print("--- Starting Live Binance Market Analysis (Start Time -> Current Time) ---")
     trades = fetch_trades_from_db()
-    
     if trades:
-        report_file = create_excel_report(trades)
-        total_pnl = sum(float(t.get("net_profit", 0.0)) for t in trades)
-        send_ntfy_notification(len(trades), total_pnl)
+        create_excel_report(trades)
     else:
         print("[WARNING] No trades found in database.")
 
