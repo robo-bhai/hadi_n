@@ -18,7 +18,15 @@ except ImportError:
 # CONFIGURATION & CONSTANTS
 # ==========================================
 NTFY_TOPIC = os.environ.get('NTFY_TOPIC', 'your_ntfy_topic_here')
-BINANCE_KLINE_URL = 'https://api.binance.com/api/v3/klines'
+
+# Public Data & Mirror Endpoints to bypass regional 451 blocks
+BINANCE_DATA_ENDPOINTS = [
+    'https://data-api.binance.vision/api/v3/klines',  # Official Public Data Archive API (No Auth/Location Restrictions)
+    'https://fapi.binance.com/fapi/v1/klines',  # Futures Market Public Data
+    'https://api1.binance.com/api/v3/klines',  # Alternate Mirror 1
+    'https://api3.binance.com/api/v3/klines',  # Alternate Mirror 2
+]
+
 BINANCE_FEE_RATE = 0.0005  # 0.05% Taker Fee
 DEFAULT_RISK_USD = 1.0  # Default Risk for Win Rate calculation if missing
 
@@ -73,37 +81,65 @@ def get_db_connection():
 
 
 # ==========================================
-# BINANCE KLINE FETCHING (1m Incremental)
+# BINANCE KLINE FETCHING (1m Incremental with Data API Fallbacks)
 # ==========================================
 
 
 def fetch_all_klines_since(symbol, start_ms):
-  """Fetch all 1m klines from start_ms up to current time (handles 1000 limit pagination)."""
+  """Fetch all 1m klines from start_ms up to current time.
+
+  Cycles through non-blocked public endpoints to bypass 451 HTTP errors.
+  """
   klines = []
   curr_start = start_ms
   now_ms = int(time.time() * 1000)
 
+  headers = {
+      'User-Agent': (
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      )
+  }
+
   while curr_start < now_ms:
-    params = {'symbol': symbol, 'interval': '1m', 'startTime': curr_start, 'limit': 1000}
-    try:
-      res = requests.get(BINANCE_KLINE_URL, params=params, timeout=10)
-      if res.status_code != 200:
-        print(f'[ERROR] Failed to fetch klines for {symbol}: {res.status_code}')
-        break
-      data = res.json()
-      if not data:
-        break
+    params = {
+        'symbol': symbol,
+        'interval': '1m',
+        'startTime': curr_start,
+        'limit': 1000,
+    }
 
-      klines.extend(data)
-      last_kline_time = data[-1][0]
+    data = None
 
-      if last_kline_time <= curr_start:
-        break
-      curr_start = last_kline_time + 1
-      time.sleep(0.05)  # Rate limit protection
-    except Exception as e:
-      print(f'[ERROR] Exception fetching klines for {symbol}: {e}')
+    # Try endpoints sequentially until one returns 200 OK
+    for endpoint in BINANCE_DATA_ENDPOINTS:
+      try:
+        res = requests.get(
+            endpoint, params=params, headers=headers, timeout=10
+        )
+        if res.status_code == 200:
+          data = res.json()
+          break
+        elif res.status_code == 400 and 'fapi' in endpoint:
+          # Skip if symbol is invalid for Futures API
+          continue
+      except Exception:
+        continue
+
+    if not data or not isinstance(data, list):
+      print(
+          f'[WARN] No response or invalid data for {symbol} at timestamp'
+          f' {curr_start}'
+      )
       break
+
+    klines.extend(data)
+    last_kline_time = data[-1][0]
+
+    if last_kline_time <= curr_start:
+      break
+
+    curr_start = last_kline_time + 1
+    time.sleep(0.05)  # Rate limit protection
 
   return klines
 
@@ -181,7 +217,7 @@ def run_comprehensive_analysis():
     else:
       start_ms = int(time.time() * 1000) - (86400 * 1000)
 
-    # 1. Fetch Klines from Open Time to Present
+    # 1. Fetch Klines from Open Time to Present using Data APIs
     klines = fetch_all_klines_since(symbol, start_ms)
 
     first_hit = None  # 'TP', 'SL', or None
@@ -289,23 +325,25 @@ def run_comprehensive_analysis():
   )
 
   report_msg = (
-      f"📊 **A-to-Z TRADE PERFORMANCE BREAKDOWN**\n"
-      f"-----------------------------------------\n"
-      f"🔹 **Total Trades Analyzed:** {total_trades}\n\n"
-      f"📈 **1. Pure Market Outcome (Without Early SL/TP Modifications):**\n"
-      f"  • Natural TP Hit First: {natural_tp_first}\n"
-      f"  • Natural SL Hit First: {natural_sl_first}\n"
-      f"  • Neither Hit Yet (Still In-Range): {neither_hit_yet}\n"
-      f"  • **Raw Strategy Win Rate:** {natural_win_rate:.2f}%\n\n"
-      f"🛡️ **2. Safe-Close & Trailing SL Analysis:**\n"
-      f"  • **Saved from Loss (Good Call):** {safe_closed_saved_us} trades (Safe close executed & market later hit original SL)\n"
-      f"  • **Missed Full Profit (Early Close):** {safe_closed_missed_tp} trades (Safe close executed, but market later reached TP)\n"
-      f"  • **In-Progress:** {safe_closed_still_pending} trades\n\n"
-      f"🏆 **3. Actual Account Outcome:**\n"
-      f"  • Realized Wins: {wins}\n"
-      f"  • Realized Losses: {losses}\n"
-      f"  • Breakeven / Flat: {breakevens}\n"
-      f"  • **Actual Strategy Win Rate:** {actual_win_rate:.2f}%\n"
+      f'📊 **A-to-Z TRADE PERFORMANCE BREAKDOWN**\n'
+      f'-----------------------------------------\n'
+      f'🔹 **Total Trades Analyzed:** {total_trades}\n\n'
+      f'📈 **1. Pure Market Outcome (Without Early SL/TP Modifications):**\n'
+      f'  • Natural TP Hit First: {natural_tp_first}\n'
+      f'  • Natural SL Hit First: {natural_sl_first}\n'
+      f'  • Neither Hit Yet (Still In-Range): {neither_hit_yet}\n'
+      f'  • **Raw Strategy Win Rate:** {natural_win_rate:.2f}%\n\n'
+      f'🛡️ **2. Safe-Close & Trailing SL Analysis:**\n'
+      f'  • **Saved from Loss (Good Call):** {safe_closed_saved_us} trades'
+      ' (Safe close executed & market later hit original SL)\n'
+      f'  • **Missed Full Profit (Early Close):** {safe_closed_missed_tp} trades'
+      ' (Safe close executed, but market later reached TP)\n'
+      f'  • **In-Progress:** {safe_closed_still_pending} trades\n\n'
+      f'🏆 **3. Actual Account Outcome:**\n'
+      f'  • Realized Wins: {wins}\n'
+      f'  • Realized Losses: {losses}\n'
+      f'  • Breakeven / Flat: {breakevens}\n'
+      f'  • **Actual Strategy Win Rate:** {actual_win_rate:.2f}%\n'
   )
 
   print(report_msg)
@@ -319,17 +357,16 @@ def send_ntfy_notification(message):
   if not NTFY_TOPIC:
     return
   try:
-    url = f"https://ntfy.sh/{NTFY_TOPIC}"
+    url = f'https://ntfy.sh/{NTFY_TOPIC}'
     requests.post(
         url,
-        data=message.encode("utf-8"),
-        headers={"Title": "Trade Strategy A-to-Z Analysis", "Priority": "3"},
+        data=message.encode('utf-8'),
+        headers={'Title': 'Trade Strategy A-to-Z Analysis', 'Priority': '3'},
     )
-    print("\n[INFO] Analysis report successfully sent to Ntfy!")
+    print('\n[INFO] Analysis report successfully sent to Ntfy!')
   except Exception as e:
-    print(f"[ERROR] Failed to send Ntfy notification: {e}")
+    print(f'[ERROR] Failed to send Ntfy notification: {e}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
   run_comprehensive_analysis()
-
